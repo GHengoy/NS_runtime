@@ -10,15 +10,10 @@ export const API_BASE = (() => {
   const envBase = import.meta.env.VITE_API_BASE
   if (envBase) return envBase
 
-  // 개발 환경: 프론트(5173) → API(8000) 다른 포트
-  if (import.meta.env.DEV) {
-    const protocol = window.location.protocol
-    const hostname = window.location.hostname
-    return `${protocol}//${hostname}:8000`
-  }
-
-  // 프로덕션: 같은 호스트와 포트
-  return `${window.location.protocol}//${window.location.host}`
+  // Backend always runs on port 8000; frontend may run on a different port
+  const protocol = window.location.protocol
+  const hostname = window.location.hostname
+  return `${protocol}//${hostname}:8000`
 })()
 
 /**
