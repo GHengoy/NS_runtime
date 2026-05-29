@@ -56,6 +56,7 @@ class DataManager:
         **_kwargs : 하위 호환용 (max_preview, save_normal 등 무시)
         """
         self.save_root = save_root
+        self.last_saved: tuple | None = None  # (image_path, mark_path, category, detections)
 
     # ------------------------------------------------------------------
     # 공개 메서드 (Public Methods)
@@ -78,7 +79,7 @@ class DataManager:
         detections : YoloDetector.detect() 의 반환값
         line_name  : 라인 이름 (폴더 경로에 사용)
         """
-        self._save("defect", image, annotated, detections, line_name)
+        return self._save("defect", image, annotated, detections, line_name)
 
     def save_borderline(
         self,
@@ -98,7 +99,7 @@ class DataManager:
         detections : 저장 대상 감지 결과
         line_name  : 라인 이름 (폴더 경로에 사용)
         """
-        self._save("borderline", image, annotated, detections, line_name)
+        return self._save("borderline", image, annotated, detections, line_name)
 
     def save_normal(self, image: np.ndarray, line_name: str = "line"):
         """하위 호환용 no-op. 정상 이미지 저장은 비활성."""
@@ -167,16 +168,20 @@ class DataManager:
         detections: "List[DetectionResult]",
         line_name: str,
     ):
-        """defect / borderline 공통 저장 로직."""
+        """defect / borderline 공통 저장 로직. (image_path, mark_path) 반환."""
         class_name = self._get_class_name(detections)
         save_dir = self._get_dated_dir(category, line_name, class_name)
         filename = self._make_filename(detections)
 
-        cv2.imwrite(os.path.join(save_dir, filename + ".jpg"), image)
-        cv2.imwrite(os.path.join(save_dir, filename + "_mark.jpg"), annotated)
+        image_path = os.path.join(save_dir, filename + ".jpg")
+        mark_path = os.path.join(save_dir, filename + "_mark.jpg")
+        cv2.imwrite(image_path, image)
+        cv2.imwrite(mark_path, annotated)
         self._save_label_txt(os.path.join(save_dir, filename + ".txt"), detections)
 
+        self.last_saved = (image_path, mark_path, category, detections)
         print(f"[DataManager] 💾 {category} 저장: {line_name}/{class_name}/{filename}")
+        return image_path, mark_path
 
     def _get_dated_dir(self, category: str, line_name: str, class_name: str) -> str:
         """라인명 · 클래스명 · 날짜 · 시각 폴더를 생성하고 경로를 반환합니다."""
@@ -215,12 +220,15 @@ class DataManager:
     @staticmethod
     def _save_label_txt(path: str, detections: "List[DetectionResult]"):
         """절대 픽셀 좌표 형식으로 라벨 텍스트 파일을 저장합니다.
-        형식: {label} {x1} {y1} {x2} {y2} {confidence:.4f}
+        형식: {label} {x1} {y1} {x2} {y2} {confidence:.4f} [recognized_text]
         주의: YOLO 정규화 좌표(0~1)가 아닌 픽셀 절대 좌표입니다."""
         try:
             with open(path, "w") as f:
                 for det in detections:
                     x1, y1, x2, y2 = det.bbox_xyxy
-                    f.write(f"{det.label} {x1} {y1} {x2} {y2} {det.confidence:.4f}\n")
+                    line = f"{det.label} {x1} {y1} {x2} {y2} {det.confidence:.4f}"
+                    if getattr(det, 'recognized_text', None):
+                        line += f" {det.recognized_text}"
+                    f.write(line + "\n")
         except Exception as e:
             print(f"[DataManager] 라벨 파일 저장 실패: {e}")

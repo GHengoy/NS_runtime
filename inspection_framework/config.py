@@ -52,7 +52,7 @@ PRODUCT_LEVEL_FIELDS = {
     'mode', 'rotation', 'crop_region', 'model_path', 'class_thresholds',
     'save_thresholds', 'device', 'reject_delay_frames', 'reject_delay_seconds',
     'reject_positions', 'reject_mode', 'time_valve_on', 'pre_valve_delay',
-    'trigger_delay_us', 'trigger_debounce_us', 'save_root', 'retention_days', 'max_preview',
+    'trigger_delay_sec', 'trigger_debounce_sec', 'save_root', 'retention_days', 'max_preview',
     'save_normal', 'detector_type', 'detector_config', 'show_threshold',
     'data_yaml',
 }
@@ -123,8 +123,8 @@ class InspectionConfig:
     reject_mode:           str            = "individual"   # "individual" | "continuous"
     time_valve_on:         float          = 0.1
     pre_valve_delay:       float          = 0.25
-    trigger_delay_us:      Optional[float] = None   # 트리거 모드 전용: 센서 인식 후 촬영 딜레이 [µs]
-    trigger_debounce_us:   Optional[float] = None   # 트리거 노이즈 제거: LineDebouncerHighTime [µs]
+    trigger_delay_sec:      Optional[float] = None   # 트리거 모드 전용: 센서 인식 후 촬영 딜레이 [초]
+    trigger_debounce_sec:   Optional[float] = None   # 트리거 노이즈 제거: LineDebouncerHighTime [초]
 
     # 데이터 저장
     save_root:      str  = "./data"

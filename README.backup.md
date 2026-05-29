@@ -1,4 +1,4 @@
-# Ansung Vision Inspection Framework
+# Anseong Vision Inspection Framework
 
 A real-time AI vision inspection system for factory production lines. Detects product defects using YOLOv12 and controls conveyor belt reject signals.
 
@@ -130,7 +130,7 @@ This script:
 **Output:**
 ```
 ==============================
-  Ansung Vision Inspection
+  Anseong Vision Inspection
 ==============================
 
 [0/2] Cleaning up existing processes...

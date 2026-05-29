@@ -69,6 +69,7 @@ class HistoryDB:
         self._lock = threading.Lock()
         self._ready = threading.Event()  # full scan 완료 시 set
         self._stop_event = threading.Event()
+        self._trigger_event = threading.Event()  # 즉시 증분 스캔 트리거
         self._thread: Optional[threading.Thread] = None
         self._save_roots: List[str] = []
         self._init_db()
@@ -80,23 +81,30 @@ class HistoryDB:
         with self._connect() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS history (
-                    id          TEXT PRIMARY KEY,
-                    category    TEXT NOT NULL,
-                    line_name   TEXT NOT NULL,
-                    class_name  TEXT NOT NULL,
-                    confidence  REAL NOT NULL,
-                    timestamp   TEXT NOT NULL,
-                    date        TEXT NOT NULL,
-                    hour        TEXT NOT NULL,
-                    filename    TEXT NOT NULL,
-                    dir_path    TEXT NOT NULL
+                    id             TEXT PRIMARY KEY,
+                    category       TEXT NOT NULL,
+                    line_name      TEXT NOT NULL,
+                    class_name     TEXT NOT NULL,
+                    confidence     REAL NOT NULL,
+                    timestamp      TEXT NOT NULL,
+                    date           TEXT NOT NULL,
+                    hour           TEXT NOT NULL,
+                    filename       TEXT NOT NULL,
+                    dir_path       TEXT NOT NULL,
+                    detector_type  TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # Migration: add detector_type column to existing databases
+            try:
+                conn.execute("ALTER TABLE history ADD COLUMN detector_type TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # column already exists
             conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON history (date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_line ON history (line_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_class ON history (class_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON history (category)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON history (timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_detector ON history (detector_type)")
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -121,8 +129,13 @@ class HistoryDB:
 
     def stop(self):
         self._stop_event.set()
+        self._trigger_event.set()  # unblock waiting thread
         if self._thread:
             self._thread.join(timeout=5)
+
+    def trigger_scan(self):
+        """불량 저장 직후 호출 — 증분 스캔을 즉시 깨웁니다."""
+        self._trigger_event.set()
 
     def wait_ready(self, timeout: float = 30.0) -> bool:
         """초기 인덱싱 완료를 대기합니다."""
@@ -146,9 +159,10 @@ class HistoryDB:
         finally:
             self._ready.set()
 
-        # 증분 스캔 루프
+        # 증분 스캔 루프 — 10초마다 또는 trigger_scan() 호출 시 즉시 실행
         while not self._stop_event.is_set():
-            self._stop_event.wait(timeout=10.0)
+            self._trigger_event.wait(timeout=10.0)
+            self._trigger_event.clear()
             if self._stop_event.is_set():
                 break
             try:
@@ -157,11 +171,12 @@ class HistoryDB:
                 print(f"[HistoryDB] Incremental scan error: {e}")
 
     def _full_scan(self) -> int:
-        """전체 디렉토리를 스캔해 DB에 INSERT OR IGNORE."""
+        """전체 디렉토리를 스캔해 DB에 INSERT OR IGNORE, 이후 orphan 레코드 정리."""
         count = 0
         conn = self._connect()
         try:
             for root in self._save_roots:
+                detector_type = os.path.basename(root)
                 for category in ("defect", "borderline"):
                     cat_dir = os.path.join(root, category)
                     if not os.path.isdir(cat_dir):
@@ -185,8 +200,20 @@ class HistoryDB:
                                     count += self._index_directory(
                                         conn, category, line_name, cls,
                                         date_folder, hour_folder, hour_dir,
+                                        detector_type,
                                     )
             conn.commit()
+
+            # 실제 파일이 없는 orphan 레코드 제거
+            rows = conn.execute("SELECT id, dir_path, filename FROM history").fetchall()
+            orphan_ids = [
+                r["id"] for r in rows
+                if not os.path.isfile(os.path.join(r["dir_path"], r["filename"]))
+            ]
+            if orphan_ids:
+                conn.executemany("DELETE FROM history WHERE id = ?", [(rid,) for rid in orphan_ids])
+                conn.commit()
+                print(f"[HistoryDB] Purged {len(orphan_ids)} orphaned records")
         finally:
             conn.close()
         return count
@@ -202,6 +229,7 @@ class HistoryDB:
         conn = self._connect()
         try:
             for root in self._save_roots:
+                detector_type = os.path.basename(root)
                 for category in ("defect", "borderline"):
                     cat_dir = os.path.join(root, category)
                     if not os.path.isdir(cat_dir):
@@ -220,6 +248,7 @@ class HistoryDB:
                                     self._index_directory(
                                         conn, category, line_name, cls,
                                         date_str, h, hour_dir,
+                                        detector_type,
                                     )
             conn.commit()
         finally:
@@ -229,6 +258,7 @@ class HistoryDB:
         self, conn: sqlite3.Connection,
         category: str, line_name: str, class_name: str,
         date_str: str, hour_str: str, dir_path: str,
+        detector_type: str = '',
     ) -> int:
         """특정 시간 폴더의 파일을 인덱싱합니다."""
         count = 0
@@ -245,11 +275,11 @@ class HistoryDB:
                 conn.execute(
                     """INSERT OR IGNORE INTO history
                        (id, category, line_name, class_name, confidence,
-                        timestamp, date, hour, filename, dir_path)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        timestamp, date, hour, filename, dir_path, detector_type)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (record_id, category, line_name, meta["class_name"],
                      meta["confidence"], meta["timestamp"],
-                     date_str, hour_str, fname, dir_path),
+                     date_str, hour_str, fname, dir_path, detector_type),
                 )
                 count += 1
             except sqlite3.IntegrityError:
@@ -264,6 +294,7 @@ class HistoryDB:
         line: Optional[str] = None,
         class_name: Optional[str] = None,
         date: Optional[str] = None,
+        detector_type: Optional[str] = None,
         page: int = 1,
         page_size: int = 60,
         sort: str = "newest",
@@ -284,6 +315,9 @@ class HistoryDB:
         if date:
             conditions.append("date = ?")
             params.append(date)
+        if detector_type:
+            conditions.append("detector_type = ?")
+            params.append(detector_type)
 
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
 
@@ -323,6 +357,7 @@ class HistoryDB:
                 "confidence": r["confidence"],
                 "timestamp": r["timestamp"],
                 "date": r["date"],
+                "detector_type": r["detector_type"],
                 "image_url": f"/api/history/image?path={fpath}",
                 "mark_url": (
                     f"/api/history/image?path={mark_path}"
@@ -339,7 +374,7 @@ class HistoryDB:
         }
 
     def query_filters(self) -> Dict:
-        """히스토리 필터 UI용 라인명/클래스명/날짜 목록을 반환합니다."""
+        """히스토리 필터 UI용 라인명/클래스명/날짜/디텍터 타입 목록을 반환합니다."""
         conn = self._connect()
         try:
             lines = [r[0] for r in conn.execute(
@@ -351,6 +386,9 @@ class HistoryDB:
             dates = [r[0] for r in conn.execute(
                 "SELECT DISTINCT date FROM history ORDER BY date DESC"
             ).fetchall()]
+            detector_types = [r[0] for r in conn.execute(
+                "SELECT DISTINCT detector_type FROM history WHERE detector_type != '' ORDER BY detector_type"
+            ).fetchall()]
         finally:
             conn.close()
 
@@ -358,6 +396,7 @@ class HistoryDB:
             "lines": lines,
             "classes": classes,
             "dates": dates,
+            "detector_types": detector_types,
         }
 
     def delete_before_date(self, cutoff_date: str):
@@ -366,5 +405,23 @@ class HistoryDB:
         try:
             conn.execute("DELETE FROM history WHERE date < ?", (cutoff_date,))
             conn.commit()
+        finally:
+            conn.close()
+
+    def delete_records_by_path(self, path: str) -> int:
+        """파일 또는 폴더 경로에 해당하는 DB 레코드를 삭제합니다."""
+        norm = os.path.normpath(path)
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """DELETE FROM history
+                   WHERE (dir_path || '/' || filename) = ?
+                      OR dir_path = ?
+                      OR dir_path LIKE ?""",
+                (norm, norm, norm + "/%"),
+            )
+            deleted = cur.rowcount
+            conn.commit()
+            return deleted
         finally:
             conn.close()

@@ -24,8 +24,8 @@ export interface ProductConfig {
   reject_mode?: 'individual' | 'continuous'
   time_valve_on: number
   pre_valve_delay: number
-  trigger_delay_us?: number | null
-  trigger_debounce_us?: number | null
+  trigger_delay_sec?: number | null
+  trigger_debounce_sec?: number | null
   save_root: string
   retention_days: number
   max_preview: number
@@ -34,6 +34,7 @@ export interface ProductConfig {
   detector_config?: Record<string, any> | null
   show_threshold?: number
   data_yaml?: string
+  show_defect_gallery?: boolean
 }
 
 export interface InspectionConfig {
@@ -56,8 +57,8 @@ export interface InspectionConfig {
   reject_mode?: 'individual' | 'continuous'
   time_valve_on: number
   pre_valve_delay: number
-  trigger_delay_us?: number | null
-  trigger_debounce_us?: number | null
+  trigger_delay_sec?: number | null
+  trigger_debounce_sec?: number | null
   save_root: string
   retention_days: number
   max_preview: number
@@ -66,6 +67,7 @@ export interface InspectionConfig {
   detector_config?: Record<string, any> | null
   show_threshold?: number
   data_yaml?: string
+  show_defect_gallery?: boolean
   active_product?: string
   products?: Record<string, ProductConfig>
 }
@@ -109,6 +111,7 @@ export interface HistoryRecord {
   confidence: number
   timestamp: string
   date: string
+  detector_type: string
   image_url: string
   mark_url: string | null
 }
@@ -125,6 +128,7 @@ export interface HistoryFilters {
   lines: string[]
   classes: string[]
   dates: string[]
+  detector_types: string[]
 }
 
 // ── Storage Settings ─────────────────────────────────────────────
@@ -132,6 +136,7 @@ export interface HistoryFilters {
 export type StorageType = 'local' | 's3'
 
 export interface StorageSettings {
+  save_root: string
   local_retention_days: number
   storage_type: StorageType
   s3_bucket: string

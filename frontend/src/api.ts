@@ -1,4 +1,4 @@
-import { InspectionConfig, InspectionLine, HistoryResponse, HistoryFilters, CollectionLineInfo, CollectionStats, CollectionMode, StorageSettings, BrowseResponse, GpuInfo } from './types'
+import { InspectionConfig, InspectionLine, HistoryResponse, HistoryRecord, HistoryFilters, CollectionLineInfo, CollectionStats, CollectionMode, StorageSettings, BrowseResponse, GpuInfo } from './types'
 import { API_BASE as BASE } from './config'
 
 export async function fetchLines(): Promise<InspectionLine[]> {
@@ -109,6 +109,7 @@ export async function fetchHistory(params: {
   line?: string
   class_name?: string
   date?: string
+  detector_type?: string
   page?: number
   page_size?: number
   sort?: string
@@ -118,6 +119,7 @@ export async function fetchHistory(params: {
   if (params.line) qs.set('line', params.line)
   if (params.class_name) qs.set('class_name', params.class_name)
   if (params.date) qs.set('date', params.date)
+  if (params.detector_type) qs.set('detector_type', params.detector_type)
   if (params.page) qs.set('page', String(params.page))
   if (params.page_size) qs.set('page_size', String(params.page_size))
   if (params.sort) qs.set('sort', params.sort)
@@ -136,6 +138,18 @@ export function historyImageUrl(url: string): string {
   return `${BASE}${url}`
 }
 
+export async function fetchDefectGallery(
+  lineName: string,
+  limit: number = 20,
+  signal?: AbortSignal
+): Promise<HistoryRecord[]> {
+  const response = await fetchHistory(
+    { category: 'defect', line: lineName, sort: 'newest', page_size: limit, page: 1 },
+    signal
+  )
+  return response.records
+}
+
 // ── Data Collection ──────────────────────────────────────────────
 
 export async function fetchCollectionLines(): Promise<CollectionLineInfo[]> {
@@ -144,7 +158,7 @@ export async function fetchCollectionLines(): Promise<CollectionLineInfo[]> {
   return res.json()
 }
 
-export async function startCollection(line_name: string): Promise<{
+export async function startCollection(line_name: string, save_dir?: string): Promise<{
   status: string
   detected_mode: CollectionMode
   save_dir: string
@@ -152,7 +166,7 @@ export async function startCollection(line_name: string): Promise<{
   const res = await fetch(`${BASE}/api/collection/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ line_name }),
+    body: JSON.stringify({ line_name, save_dir: save_dir || null }),
   })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
@@ -222,6 +236,18 @@ export async function testStorageConnection(settings: Omit<StorageSettings, 's3_
 export async function triggerCleanupNow(): Promise<{ message: string }> {
   const res = await fetch(`${BASE}/api/settings/storage/cleanup`, { method: 'POST' })
   if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function fetchDiskUsage(): Promise<{
+  path: string
+  total: number
+  used: number
+  free: number
+  percent: number
+}> {
+  const res = await fetch(`${BASE}/api/storage/disk-usage`)
+  if (!res.ok) throw new Error('Failed to fetch disk usage')
   return res.json()
 }
 
@@ -353,16 +379,41 @@ export async function updateThresholds(lineName: string, product: string, classT
   if (!res.ok) throw new Error(await res.text())
 }
 
+export async function updateRejectConfig(lineName: string, product: string, rejectConfig: Record<string, any>): Promise<void> {
+  const res = await fetch(`${BASE}/api/lines/${encodeURIComponent(lineName)}/reject-config`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ product, reject_config: rejectConfig }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
 export async function manualReject(lineName: string): Promise<void> {
   const res = await fetch(`${BASE}/api/lines/${encodeURIComponent(lineName)}/manual-reject`, { method: 'POST' })
   if (!res.ok) throw new Error(await res.text())
 }
 
-export async function captureFrame(lineName: string): Promise<string> {
+export async function captureFrame(lineName: string): Promise<{ url: string; origW: number; origH: number }> {
   const res = await fetch(`${BASE}/api/lines/${encodeURIComponent(lineName)}/capture-frame`)
   if (!res.ok) throw new Error(await res.text())
+  const origW = parseInt(res.headers.get('X-Frame-Width') ?? '0', 10)
+  const origH = parseInt(res.headers.get('X-Frame-Height') ?? '0', 10)
   const blob = await res.blob()
-  return URL.createObjectURL(blob)
+  return { url: URL.createObjectURL(blob), origW, origH }
+}
+
+export async function snapshotFrame(lineName: string): Promise<{ url: string; origW: number; origH: number }> {
+  const res = await fetch(`${BASE}/api/lines/${encodeURIComponent(lineName)}/snapshot`)
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = text
+    try { msg = JSON.parse(text).detail ?? text } catch { /* raw text fallback */ }
+    throw new Error(msg)
+  }
+  const origW = parseInt(res.headers.get('X-Frame-Width') ?? '0', 10)
+  const origH = parseInt(res.headers.get('X-Frame-Height') ?? '0', 10)
+  const blob = await res.blob()
+  return { url: URL.createObjectURL(blob), origW, origH }
 }
 
 export async function fetchGpus(): Promise<GpuInfo[]> {

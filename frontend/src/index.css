@@ -34,3 +34,23 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #636d83;
 }
+
+/* 가동 중 카드 글로우 펄스 애니메이션 */
+@keyframes running-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 6px rgba(52, 211, 153, 0.15),
+      0 0 1px rgba(52, 211, 153, 0.4),
+      inset 0 0 8px rgba(52, 211, 153, 0.03);
+  }
+  50% {
+    box-shadow:
+      0 0 14px rgba(52, 211, 153, 0.3),
+      0 0 2px rgba(52, 211, 153, 0.6),
+      inset 0 0 12px rgba(52, 211, 153, 0.06);
+  }
+}
+
+.card-running-glow {
+  animation: running-glow 3s ease-in-out infinite;
+}

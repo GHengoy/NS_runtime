@@ -1,9 +1,9 @@
 """
-backend/main.py — Ansung Vision Inspection FastAPI 서버
+backend/main.py — Anseong Vision Inspection FastAPI 서버
 =======================================================
 
 [실행 방법]
-    cd /Users/nongshim/Desktop/Ansung_code
+    cd /Users/nongshim/Desktop/Anseong_code
     uv run uvicorn backend.main:app --reload --port 8000
 
 [현재 구현된 API]
@@ -66,8 +66,21 @@ from backend.collection import CollectionSession
 from backend.history_db import HistoryDB
 from backend.storage import S3SyncWorker
 
-# uvicorn 액세스 로그 비활성화 (INFO: 127.0.0.1 - "GET /api/lines ..." 제거)
+class _WsConnectionFilter(logging.Filter):
+    _skip = frozenset({'connection open', 'connection closed'})
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() not in self._skip
+
+
+logging.getLogger("uvicorn.error").addFilter(_WsConnectionFilter())
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
+logging.getLogger("ultralytics").setLevel(logging.WARNING)
+
+# YOLO 모델 로딩 시 verbose 출력 억제 (ultralytics import 전에 설정해야 효과 있음)
+os.environ.setdefault("YOLO_VERBOSE", "False")
 
 # ── 경로 ────────────────────────────────────────────────────────────────────
 _FRAMEWORK_PATH = os.path.join(os.path.dirname(__file__), '..', 'inspection_framework')
@@ -83,9 +96,11 @@ _s3_sync: Optional[S3SyncWorker] = None
 # 제품 레벨(검사 설정): 아래 목록 — 제품마다 개별 값을 가짐
 PRODUCT_FIELDS = [
     'mode', 'rotation', 'crop_region', 'model_path', 'class_thresholds',
-    'save_thresholds', 'device', 'reject_delay_frames', 'reject_positions',
+    'save_thresholds', 'device', 'reject_delay_frames', 'reject_delay_seconds',
+    'reject_positions', 'reject_mode',
     'time_valve_on', 'pre_valve_delay', 'save_root', 'retention_days',
     'max_preview', 'save_normal', 'detector_type', 'detector_config',
+    'show_threshold', 'data_yaml',
 ]
 
 
@@ -139,10 +154,16 @@ class LineConfig(BaseModel):
     save_thresholds: Optional[Dict[str, float]] = None
     device: str = "cuda"
     reject_delay_frames: int = 10
+    reject_delay_seconds: Optional[float] = None
     reject_positions: int = 1
+    reject_mode: str = "individual"      # individual | continuous
     time_valve_on: float = 0.1           # 밸브 열림 지속 시간 (초)
     reject_pulse_count: Optional[int] = None  # deprecated: 마이그레이션용, time_valve_on으로 대체
     pre_valve_delay: float = 0.25
+    trigger_delay_sec: Optional[float] = None
+    trigger_debounce_sec: Optional[float] = None
+    show_threshold: Optional[float] = None
+    data_yaml: Optional[str] = None
     save_root: str = "./data"
     retention_days: int = 180
     max_preview: int = 50
@@ -165,6 +186,7 @@ _history_db: Optional[HistoryDB] = None
 # ── 글로벌 설정 (S3 등) ───────────────────────────────────────────────────────
 
 _DEFAULT_STORAGE = {
+    "save_root": "./data",
     "local_retention_days": 180,
     "storage_type": "local",
     "s3_bucket": "",
@@ -175,6 +197,18 @@ _DEFAULT_STORAGE = {
     "s3_retention_days": 365,
     "s3_cleanup_interval_hours": 6,
 }
+
+
+def _get_global_save_root() -> str:
+    """글로벌 save_root 절대 경로를 반환합니다."""
+    gs = _load_global_settings()
+    raw = gs.get("storage", {}).get("save_root", "./data")
+    if not raw:
+        raw = "./data"
+    if os.path.isabs(raw):
+        return os.path.normpath(raw)
+    project_root = os.path.join(os.path.dirname(__file__), '..')
+    return os.path.normpath(os.path.join(project_root, raw))
 
 _DEFAULT_ADMIN = {
     "password": "1234",
@@ -255,6 +289,55 @@ def _stop_s3_sync():
         print("[S3] Sync worker stopped")
 
 
+# ── 실시간 불량 브로드캐스터 ──────────────────────────────────────────────────
+
+class DefectBroadcaster:
+    """불량 감지 즉시 /ws/defects 클라이언트에 HistoryRecord를 브로드캐스트합니다."""
+
+    def __init__(self):
+        self._connections: set = set()
+        self._lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def connect(self, ws: "WebSocket"):
+        await ws.accept()
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+        with self._lock:
+            self._connections.add(ws)
+
+    def disconnect(self, ws: "WebSocket"):
+        with self._lock:
+            self._connections.discard(ws)
+
+    @property
+    def has_clients(self) -> bool:
+        with self._lock:
+            return bool(self._connections)
+
+    async def _broadcast(self, data: dict):
+        dead: set = set()
+        with self._lock:
+            conns = set(self._connections)
+        for ws in conns:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.add(ws)
+        if dead:
+            with self._lock:
+                self._connections -= dead
+
+    def broadcast_sync(self, data: dict):
+        """워커 스레드(non-async 컨텍스트)에서 호출합니다."""
+        if self._loop is None or not self.has_clients:
+            return
+        asyncio.run_coroutine_threadsafe(self._broadcast(data), self._loop)
+
+
+_defect_broadcaster = DefectBroadcaster()
+
+
 def _save_callback_dispatcher(category, save_root, line_name, detections=None, **kw):
     """모든 워커에 주입되는 콜백 래퍼. S3 활성 시 enqueue를 호출합니다."""
     if _s3_sync is not None:
@@ -262,6 +345,46 @@ def _save_callback_dispatcher(category, save_root, line_name, detections=None, *
             category=category, save_root=save_root,
             line_name=line_name, detections=detections, **kw,
         )
+    # 불량 저장 즉시 HistoryDB 증분 스캔 트리거
+    if _history_db is not None:
+        _history_db.trigger_scan()
+
+    # 실시간 브로드캐스트: 파일 저장 완료 즉시 History 페이지에 반영
+    saved_paths = kw.get("saved_paths")
+    if saved_paths and _defect_broadcaster.has_clients:
+        image_path = saved_paths[0] if saved_paths else None
+        mark_path = saved_paths[1] if len(saved_paths) > 1 else None
+        if image_path:
+            # image_path: {save_root}/{category}/{line_name}/{class_name}/{date}/{hour}/{fname}
+            fname = os.path.basename(image_path)
+            hour_dir = os.path.dirname(image_path)
+            date_dir = os.path.dirname(hour_dir)
+            class_dir = os.path.dirname(date_dir)
+            hour_str = os.path.basename(hour_dir)
+            date_str = os.path.basename(date_dir)
+            class_name = os.path.basename(class_dir)
+            det = detections[0] if detections else None
+            confidence = float(det.confidence) if det else 0.0
+            record_id = f"{category}/{line_name}/{class_name}/{date_str}/{hour_str}/{fname}"
+            detector_type = os.path.basename(save_root)
+            now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            record = {
+                "type": "new_defect",
+                "id": record_id,
+                "category": category,
+                "line_name": line_name,
+                "class_name": class_name,
+                "confidence": confidence,
+                "timestamp": now_ts,
+                "date": date_str,
+                "detector_type": detector_type,
+                "image_url": f"/api/history/image?path={image_path}",
+                "mark_url": (
+                    f"/api/history/image?path={mark_path}"
+                    if mark_path and os.path.exists(mark_path) else None
+                ),
+            }
+            _defect_broadcaster.broadcast_sync(record)
 
 
 # ── 헬퍼: 빈 워커 슬롯 탐색 ────────────────────────────────────────────────
@@ -276,6 +399,60 @@ def _next_worker_slot() -> Optional[str]:
         if not os.path.exists(config_path):
             return folder_name
     return None
+
+
+# ── 경로 상대화 (사용자/머신 독립) ────────────────────────────────────────────
+
+_RUNTIME_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_PATH_FIELDS = ("model_path", "save_root", "pfs_file", "data_yaml")
+
+
+def _to_relative(val: str, worker_folder: str) -> str:
+    """절대 경로를 워커 폴더 기준 상대 경로로 변환합니다.
+    이미 상대 경로이거나 빈 값이면 그대로 반환합니다."""
+    if not isinstance(val, str) or not val or not os.path.isabs(val):
+        return val
+    # 정규화: /backend/../workers/worker-01/./data → /workers/worker-01/data
+    abs_val = os.path.normpath(val)
+    abs_worker = os.path.normpath(worker_folder)
+    try:
+        return os.path.relpath(abs_val, abs_worker)
+    except ValueError:
+        # Windows: 드라이브가 다르면 절대 경로 유지
+        return val
+
+
+def _to_absolute(val: str, worker_folder: str) -> str:
+    """상대 경로를 워커 폴더 기준 절대 경로로 변환합니다."""
+    if not isinstance(val, str) or not val:
+        return val
+    if os.path.isabs(val):
+        return os.path.normpath(val)
+    return os.path.normpath(os.path.join(worker_folder, val))
+
+
+def _relativize_config(config: dict, worker_folder: str):
+    """config 내 절대 경로를 워커 폴더 기준 상대 경로로 변환합니다 (저장용)."""
+    for key in _PATH_FIELDS:
+        if key in config and config[key]:
+            config[key] = _to_relative(config[key], worker_folder)
+    for prod in (config.get("products") or {}).values():
+        if isinstance(prod, dict):
+            for key in _PATH_FIELDS:
+                if key in prod and prod[key]:
+                    prod[key] = _to_relative(prod[key], worker_folder)
+
+
+def _absolutize_config(config: dict, worker_folder: str):
+    """config 내 상대 경로를 워커 폴더 기준 절대 경로로 변환합니다 (런타임용)."""
+    for key in _PATH_FIELDS:
+        if key in config and config[key]:
+            config[key] = _to_absolute(config[key], worker_folder)
+    for prod in (config.get("products") or {}).values():
+        if isinstance(prod, dict):
+            for key in _PATH_FIELDS:
+                if key in prod and prod[key]:
+                    prod[key] = _to_absolute(prod[key], worker_folder)
 
 
 # ── workers/ 폴더 영속성 ──────────────────────────────────────────────────────
@@ -302,7 +479,23 @@ def _load_registry():
             config.setdefault('reject_positions', 1)
             config.setdefault('reject_mode', 'individual')
             config.setdefault('reject_delay_seconds', None)
-            config.setdefault('trigger_delay_us', None)
+            # 마이그레이션: trigger_delay_us → trigger_delay_sec (µs → sec 변환)
+            if 'trigger_delay_us' in config:
+                old = config.pop('trigger_delay_us')
+                config.setdefault('trigger_delay_sec', (old / 1_000_000) if old else None)
+            if 'trigger_debounce_us' in config:
+                old = config.pop('trigger_debounce_us')
+                config.setdefault('trigger_debounce_sec', (old / 1_000_000) if old else None)
+            for _prod in (config.get('products') or {}).values():
+                if isinstance(_prod, dict):
+                    if 'trigger_delay_us' in _prod:
+                        _old = _prod.pop('trigger_delay_us')
+                        _prod.setdefault('trigger_delay_sec', (_old / 1_000_000) if _old else None)
+                    if 'trigger_debounce_us' in _prod:
+                        _old = _prod.pop('trigger_debounce_us')
+                        _prod.setdefault('trigger_debounce_sec', (_old / 1_000_000) if _old else None)
+            config.setdefault('trigger_delay_sec', None)
+            config.setdefault('trigger_debounce_sec', None)
             config.setdefault('save_thresholds', None)
             config.setdefault('detector_type', 'yolo')
             config.setdefault('show_threshold', 0.3)
@@ -314,12 +507,16 @@ def _load_registry():
             # project_name 없으면 line_name으로 초기화 (화면 표시명, 자유 변경)
             config.setdefault('project_name', config.get('line_name', folder_name))
             name = folder_name
+            # 상대 경로 → 절대 경로로 변환 (런타임용)
+            _absolutize_config(config, folder_path)
             _registry[name] = {
                 'config': config,
                 'worker': None,
                 'folder': folder_path,
             }
             loaded += 1
+            # 절대 경로를 상대 경로로 변환하여 config.json 재저장
+            _save_line(name)
         except Exception as e:
             print(f'[Config] {config_path} 불러오기 실패: {e}')
     print(f'[Config] {loaded}개 워커 불러오기 완료 (workers/ 폴더)')
@@ -340,7 +537,10 @@ def _save_line(name: str):
     if config.get('products') and config.get('active_product'):
         save_data = {k: v for k, v in config.items() if k not in PRODUCT_FIELDS}
     else:
-        save_data = config
+        save_data = dict(config)
+    # 저장 시 절대 경로 → 워커 폴더 기준 상대 경로로 변환 (deep copy로 원본 보호)
+    save_data = json.loads(json.dumps(save_data))
+    _relativize_config(save_data, folder)
     config_path = os.path.join(folder, 'config.json')
     tmp_path = config_path + '.tmp'
     try:
@@ -417,9 +617,13 @@ _load_registry()
 # ── 헬퍼 ────────────────────────────────────────────────────────────────────
 
 def _get_entry(name: str) -> Dict[str, Any]:
-    # 폴더 이름으로만 조회 (line_name = folder_name으로 통일됨)
+    # 폴더 이름으로 우선 조회
     if name in _registry:
         return _registry[name]
+    # fallback: config의 line_name으로 검색
+    for entry in _registry.values():
+        if entry["config"].get("line_name") == name:
+            return entry
     raise HTTPException(status_code=404, detail=f"라인 '{name}'을 찾을 수 없습니다.")
 
 
@@ -440,7 +644,16 @@ def _make_worker(config_dict: dict, folder: str = None):
         d['pfs_file'] = _abs(d.get('pfs_file', ''))
         for prod in d.get('products', {}).values():
             prod['model_path'] = _abs(prod.get('model_path', ''))
-            prod['save_root']   = _abs(prod.get('save_root', ''))
+    # save_root: 글로벌 save_root / detector_type 으로 유형별 분류
+    global_save_root = _get_global_save_root()
+    _det_label = {"paddleocr": "ocr"}  # 폴더명 간소화 매핑
+    det_type = d.get('detector_type', 'yolo')
+    det_folder = _det_label.get(det_type, det_type)
+    d['save_root'] = os.path.join(global_save_root, det_folder)
+    for prod in d.get('products', {}).values():
+        prod_det = prod.get('detector_type', det_type)
+        prod_folder = _det_label.get(prod_det, prod_det)
+        prod['save_root'] = os.path.join(global_save_root, prod_folder)
     cfg = InspectionConfig.from_dict(d)
 
     if folder:
@@ -494,7 +707,7 @@ def _worker_stats(name: str) -> dict:
 
 # ── FastAPI 앱 ───────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Ansung Vision Inspection API", version="0.1.0")
+app = FastAPI(title="Anseong Vision Inspection API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -543,7 +756,7 @@ def reload_lines():
             disk_cfg.setdefault('reject_positions', 1)
             disk_cfg.setdefault('reject_mode', 'individual')
             disk_cfg.setdefault('reject_delay_seconds', None)
-            disk_cfg.setdefault('trigger_delay_us', None)
+            disk_cfg.setdefault('trigger_delay_sec', None)
             disk_cfg.setdefault('detector_type', 'yolo')
             disk_cfg.setdefault('show_threshold', 0.3)
             disk_cfg.setdefault('data_yaml', './weights/data.yaml')
@@ -757,7 +970,7 @@ def reset_line(name: str):
             config.setdefault('reject_positions', 1)
             config.setdefault('reject_mode', 'individual')
             config.setdefault('reject_delay_seconds', None)
-            config.setdefault('trigger_delay_us', None)
+            config.setdefault('trigger_delay_sec', None)
             config.setdefault('save_thresholds', None)
             config.setdefault('detector_type', 'yolo')
             config.setdefault('show_threshold', 0.3)
@@ -800,12 +1013,77 @@ def capture_frame(name: str):
         item = w.frame_queue.get(timeout=2.0)
     except Empty:
         raise HTTPException(504, "No frame available (timeout)")
-    jpeg = item[0] if isinstance(item, tuple) else item
-    return StreamingResponse(
-        iter([jpeg]),
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-cache"},
-    )
+    if isinstance(item, tuple):
+        jpeg, meta = item[0], (item[1] if len(item) > 1 else {})
+    else:
+        jpeg, meta = item, {}
+    headers = {"Cache-Control": "no-cache"}
+    orig_w = meta.get("orig_w") or (getattr(w, '_orig_frame_size', None) or (0, 0))[0]
+    orig_h = meta.get("orig_h") or (getattr(w, '_orig_frame_size', None) or (0, 0))[1]
+    if orig_w and orig_h:
+        headers["X-Frame-Width"] = str(orig_w)
+        headers["X-Frame-Height"] = str(orig_h)
+    return StreamingResponse(iter([jpeg]), media_type="image/jpeg", headers=headers)
+
+
+@app.get("/api/lines/{name}/snapshot")
+def snapshot_frame(name: str):
+    """워커가 정지 상태일 때 카메라에서 직접 프레임 한 장을 캡처합니다."""
+    entry = _get_entry(name)
+    config = entry["config"]
+    camera_type = config.get("camera_type", "basler")
+    camera_ip = config.get("camera_ip", "")
+    pfs_file = config.get("pfs_file", "")
+    _ROTATION_MAP = {"CLOCKWISE_90": 0, "COUNTERCLOCKWISE_90": 2, "180": 1}
+    rotation = _ROTATION_MAP.get(config.get("rotation", "NONE"))
+
+    sys.path.insert(0, _FRAMEWORK_PATH)
+    try:
+        import cv2
+        if camera_type == "webcam":
+            from webcam_camera import WebcamCamera
+            cam = WebcamCamera(camera_ip=camera_ip, rotation=rotation, crop_region=None)
+        else:
+            from camera import BaslerCamera
+            cam = BaslerCamera(camera_ip=camera_ip, pfs_file=pfs_file, rotation=rotation, crop_region=None)
+        cam.open()
+        # PFS 파일이 TriggerMode=On으로 설정된 경우 free-running으로 강제 전환
+        if camera_type != "webcam" and getattr(cam, '_cam', None) is not None:
+            try:
+                from pypylon import pylon as _pylon
+                cam._cameras.StopGrabbing()
+                cam._cam.TriggerMode.SetValue("Off")
+                cam._cameras.StartGrabbing(_pylon.GrabStrategy_LatestImageOnly)
+            except Exception:
+                pass
+        try:
+            frame = None
+            for _ in range(10):
+                result = cam.grab()
+                if result[0] is not None:
+                    frame = result[0]
+                    break
+        finally:
+            cam.close()
+        if frame is None:
+            raise HTTPException(504, "Could not grab frame from camera")
+        h, w = frame.shape[:2]
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if not ok:
+            raise HTTPException(500, "Failed to encode frame")
+        return StreamingResponse(
+            iter([buf.tobytes()]),
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Frame-Width": str(w),
+                "X-Frame-Height": str(h),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Snapshot failed: {e}")
 
 
 @app.patch("/api/lines/{name}/thresholds")
@@ -829,6 +1107,47 @@ def update_thresholds(name: str, body: dict):
     w = entry.get("worker")
     if w and w.status == "running" and config.get("active_product") == product_name:
         w.update_class_thresholds(new_thresholds)
+    return {"status": "ok"}
+
+
+@app.patch("/api/lines/{name}/reject-config")
+def update_reject_config(name: str, body: dict):
+    """실행 중 워커의 리젝트 타이밍 설정을 업데이트합니다. 워커 재시작 필요."""
+    entry = _get_entry(name)
+    product_name = body.get("product")
+    reject_config = body.get("reject_config")
+    if not product_name or not reject_config:
+        raise HTTPException(400, "Missing 'product' or 'reject_config'")
+    config = entry["config"]
+    products = config.get("products", {})
+    if product_name not in products:
+        raise HTTPException(404, f"Product '{product_name}' not found")
+
+    # 허용 필드만 업데이트
+    _ALLOWED = {"time_valve_on", "pre_valve_delay", "trigger_delay_sec",
+                "trigger_debounce_sec", "reject_delay_frames", "reject_delay_seconds",
+                "reject_positions", "reject_mode"}
+    for key in _ALLOWED:
+        if key in reject_config:
+            products[product_name][key] = reject_config[key]
+            if config.get("active_product") == product_name:
+                config[key] = reject_config[key]
+
+    _save_line(name)
+
+    # 실행 중이면 워커 재시작 (리젝트 타이밍은 Rejecter 초기화 시 적용)
+    w = entry.get("worker")
+    if w and w.status in ("running", "initializing") and config.get("active_product") == product_name:
+        w.stop()
+        w.join(timeout=5.0)
+        entry["worker"] = None
+        try:
+            new_w = _make_worker(config, folder=entry.get("folder"))
+            new_w.start()
+            entry["worker"] = new_w
+        except Exception as e:
+            raise HTTPException(500, f"워커 재시작 실패: {e}")
+
     return {"status": "ok"}
 
 
@@ -885,13 +1204,29 @@ def switch_product(name: str, body: dict):
 
 # ── WebSocket 스트리밍 ────────────────────────────────────────────────────────
 
+# /ws/defects 는 반드시 /ws/{name} 보다 먼저 등록해야 합니다.
+# FastAPI는 등록 순서대로 라우트를 매칭하므로, 뒤에 등록하면 "defects"가
+# 워커 이름으로 해석되어 연결이 즉시 끊어집니다.
+@app.websocket("/ws/defects")
+async def ws_defects(websocket: WebSocket):
+    """불량 감지 즉시 HistoryRecord를 브로드캐스트하는 전역 채널."""
+    await _defect_broadcaster.connect(websocket)
+    try:
+        while True:
+            # keep-alive: 클라이언트 핑 수신 대기 (연결 유지)
+            await websocket.receive_text()
+    except (WebSocketDisconnect, Exception):
+        _defect_broadcaster.disconnect(websocket)
+
+
 @app.websocket("/ws/{name}")
 async def ws_stream(websocket: WebSocket, name: str):
     await websocket.accept()
-    if name not in _registry:
+    try:
+        entry = _get_entry(name)
+    except HTTPException:
         await websocket.close(code=4004)
         return
-    entry = _registry[name]
     w = entry.get("worker")
     if w is None:
         await websocket.close(code=4004)
@@ -961,28 +1296,29 @@ def get_detector_types():
 # ── Defect History API ────────────────────────────────────────────────────────
 
 def _collect_save_roots() -> List[str]:
-    """등록된 라인들의 save_root 목록(중복 제거)을 반환합니다."""
-    roots = set()
-    for entry in _registry.values():
-        cfg = entry["config"]
-        folder = entry.get("folder", "")
-
-        def _abs_root(p: str) -> str:
-            if not p:
-                p = "./data"
-            if os.path.isabs(p):
-                return os.path.normpath(p)
-            if folder:
-                return os.path.normpath(os.path.join(folder, p))
-            return os.path.abspath(p)
-
-        products = cfg.get("products", {})
-        for prod in products.values():
-            roots.add(_abs_root(prod.get("save_root", "./data")))
-        roots.add(_abs_root(cfg.get("save_root", "./data")))
+    """글로벌 save_root 및 detector type 하위 폴더들을 반환합니다.
+    데이터 구조: {save_root}/{detector_type}/defect/... 이므로
+    히스토리 인덱서가 각 detector_type 폴더를 개별 root로 스캔합니다."""
+    base = _get_global_save_root()
+    roots = []
+    _skip = {"preview", "archive", "normal"}
+    if os.path.isdir(base):
+        has_direct = False
+        sub_roots = []
+        for entry in os.listdir(base):
+            sub = os.path.join(base, entry)
+            if not os.path.isdir(sub):
+                continue
+            if entry in ("defect", "borderline"):
+                has_direct = True
+            elif entry not in _skip:
+                sub_roots.append(sub)
+        if has_direct:
+            roots.append(base)
+        roots.extend(sub_roots)
     if not roots:
-        roots.add(os.path.abspath("./data"))
-    return list(roots)
+        roots.append(base)
+    return roots
 
 
 @app.get("/api/history")
@@ -991,6 +1327,7 @@ def get_history(
     line: Optional[str] = Query(None),
     class_name: Optional[str] = Query(None),
     date: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    detector_type: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(60, ge=1, le=200),
     sort: str = Query("newest", pattern="^(newest|oldest|confidence_high|confidence_low)$"),
@@ -1000,7 +1337,7 @@ def get_history(
         return {"records": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0}
     return _history_db.query_history(
         category=category, line=line, class_name=class_name,
-        date=date, page=page, page_size=page_size, sort=sort,
+        date=date, detector_type=detector_type, page=page, page_size=page_size, sort=sort,
     )
 
 
@@ -1025,7 +1362,7 @@ def rescan_history():
     roots = _collect_save_roots()
     print(f"[History] Rescan requested. Roots: {roots}")
     if _history_db is None:
-        db_dir = roots[0] if roots else os.path.abspath("./data")
+        db_dir = _get_global_save_root()
         db_path = os.path.join(db_dir, "history_index.db")
         _history_db = HistoryDB(db_path)
         _history_db.start(save_roots=roots)
@@ -1041,9 +1378,9 @@ def rescan_history():
 
 @app.get("/api/history/filters")
 def get_history_filters():
-    """히스토리 필터 UI용 라인명/클래스명/날짜 목록. (SQLite 인덱스 기반)"""
+    """히스토리 필터 UI용 라인명/클래스명/날짜/디텍터 타입 목록. (SQLite 인덱스 기반)"""
     if _history_db is None:
-        return {"lines": [], "classes": [], "dates": []}
+        return {"lines": [], "classes": [], "dates": [], "detector_types": []}
     return _history_db.query_filters()
 
 
@@ -1051,6 +1388,7 @@ def get_history_filters():
 
 class CollectionStartRequest(BaseModel):
     line_name: str
+    save_dir: Optional[str] = None  # None → default: only_image/{line_name}
 
 
 class CollectionStopRequest(BaseModel):
@@ -1097,7 +1435,11 @@ def start_collection(body: CollectionStartRequest):
 
     cfg = entry["config"]
     folder = entry.get("folder", "")
-    save_dir = os.path.join(os.path.dirname(__file__), '..', 'only_image', name)
+    if body.save_dir and body.save_dir.strip():
+        raw = body.save_dir.strip()
+        save_dir = raw if os.path.isabs(raw) else os.path.join(os.path.dirname(__file__), '..', raw)
+    else:
+        save_dir = os.path.join(os.path.dirname(__file__), '..', 'only_image', name)
 
     def _abs(p: str) -> str:
         return os.path.join(folder, p) if p and not os.path.isabs(p) and folder else p
@@ -1230,6 +1572,7 @@ def update_admin_password(body: AdminPasswordUpdate):
 # ── 스토리지 설정 API ────────────────────────────────────────────────────────
 
 class StorageSettings(BaseModel):
+    save_root: str = "./data"        # 글로벌 저장 경로
     local_retention_days: int = 180  # 로컬 데이터 보관 기간 (일). 0 = 무제한
     storage_type: str = "local"      # "local" | "s3"
     s3_bucket: str = ""
@@ -1247,6 +1590,7 @@ def get_storage_settings():
     settings = _load_global_settings()
     storage = settings.get("storage", dict(_DEFAULT_STORAGE))
     result = {
+        "save_root": storage.get("save_root", "./data"),
         "local_retention_days": storage.get("local_retention_days", 180),
         "storage_type": storage.get("storage_type", "local"),
         "s3_bucket": storage.get("s3_bucket", ""),
@@ -1270,7 +1614,8 @@ def update_storage_settings(body: StorageSettings):
 
     new_storage = body.model_dump()
 
-    _save_global_settings({"storage": new_storage})
+    current["storage"] = new_storage
+    _save_global_settings(current)
 
     # S3 모드 전환 처리
     if new_storage["storage_type"] == "s3":
@@ -1451,6 +1796,25 @@ def browse_local(path: str = Query("")):
     }
 
 
+@app.get("/api/storage/disk-usage")
+def get_disk_usage():
+    """save_root가 위치한 드라이브의 디스크 사용량을 반환합니다."""
+    import shutil
+    path = _get_global_save_root()
+    try:
+        os.makedirs(path, exist_ok=True)
+        usage = shutil.disk_usage(path)
+        return {
+            "path": path,
+            "total": usage.total,
+            "used": usage.used,
+            "free": usage.free,
+            "percent": round(usage.used / usage.total * 100, 1) if usage.total > 0 else 0,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/storage/s3/browse")
 def browse_s3(prefix: str = Query("")):
     """S3 버킷의 폴더/파일 목록을 반환합니다."""
@@ -1542,6 +1906,7 @@ def delete_local_file(path: str = Query(...)):
     if not os.path.isfile(abspath):
         raise HTTPException(404, "File not found")
     os.remove(abspath)
+    _history_db.delete_records_by_path(abspath)
     return {"deleted": True, "path": abspath}
 
 
@@ -1552,12 +1917,13 @@ def delete_local_folder(path: str = Query(...)):
     abspath = _validate_local_path(path)
     if not os.path.isdir(abspath):
         raise HTTPException(404, "Directory not found")
-    # save_root 자체는 삭제 불가
-    roots = _collect_save_roots()
-    if abspath in roots:
-        raise HTTPException(400, "Cannot delete a save root directory")
+    # 글로벌 save_root 기준 폴더 자체는 삭제 불가
+    base_root = os.path.normpath(_get_global_save_root())
+    if os.path.normpath(abspath) == base_root:
+        raise HTTPException(400, "Cannot delete the save root directory")
     count = sum(len(files) for _, _, files in os.walk(abspath))
     shutil.rmtree(abspath)
+    _history_db.delete_records_by_path(abspath)
     return {"deleted": True, "path": abspath, "files_removed": count}
 
 
@@ -1844,7 +2210,7 @@ def on_startup():
 
     # 1. 히스토리 SQLite 인덱서 시작
     roots = _collect_save_roots()
-    db_dir = roots[0] if roots else os.path.abspath("./data")
+    db_dir = _get_global_save_root()
     db_path = os.path.join(db_dir, "history_index.db")
     _history_db = HistoryDB(db_path)
     _history_db.start(save_roots=roots)
@@ -1873,6 +2239,18 @@ def on_startup():
 @app.on_event("shutdown")
 def on_shutdown():
     """서버 종료 시 백그라운드 스레드를 정리합니다."""
+    # 실행 중인 모든 워커 정지 (카메라 close() 보장)
+    running = [
+        entry["worker"]
+        for entry in _registry.values()
+        if entry.get("worker") is not None
+           and entry["worker"].status in ("running", "initializing")
+    ]
+    for w in running:
+        w.stop()
+    for w in running:
+        w.join(timeout=5.0)
+
     _cleanup_stop_event.set()
     _stop_s3_sync()
     if _history_db is not None:

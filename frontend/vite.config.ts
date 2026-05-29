@@ -9,4 +9,8 @@ export default defineConfig({
     middlewareMode: false,
     // proxy는 config.ts의 동적 감지로 처리 (localhost & 외부IP 모두 지원)
   },
+  preview: {
+    host: '0.0.0.0',
+    port: 5173,
+  },
 })

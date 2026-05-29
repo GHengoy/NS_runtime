@@ -7,7 +7,7 @@ import {
 import {
   browseLocal, browseS3, localImageUrl, s3ImageUrl,
   deleteLocalFile, deleteLocalFolder, deleteS3File, deleteS3Folder,
-  fetchStorageSettings,
+  fetchStorageSettings, fetchDiskUsage,
 } from '../api'
 import type { BrowseItem, StorageType } from '../types'
 import S3ConfigModal from '../components/S3ConfigModal'
@@ -17,7 +17,8 @@ function formatSize(bytes: number | null): string {
   if (bytes === null || bytes === undefined) return '—'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 function formatDate(iso: string | null): string {
@@ -62,6 +63,9 @@ export default function Storage() {
   const [s3Bucket, setS3Bucket] = useState('')
   const [storageType, setStorageType] = useState<StorageType>('local')
 
+  // Disk usage
+  const [diskUsage, setDiskUsage] = useState<{ total: number; used: number; free: number; percent: number } | null>(null)
+
   // Modals
   const [s3ConfigOpen, setS3ConfigOpen] = useState(false)
   const [previewItem, setPreviewItem] = useState<BrowseItem | null>(null)
@@ -80,6 +84,13 @@ export default function Storage() {
   }, [])
 
   useEffect(() => { loadS3Status() }, [loadS3Status])
+
+  useEffect(() => {
+    const load = () => fetchDiskUsage().then(setDiskUsage).catch(() => {})
+    load()
+    const id = setInterval(load, 30_000)
+    return () => clearInterval(id)
+  }, [])
 
   // Browse
   const browse = useCallback(async (source: 'local' | 's3', path: string) => {
@@ -298,6 +309,46 @@ export default function Storage() {
             <Settings size={14} />
             Config
           </button>
+
+          {/* Disk Usage */}
+          {diskUsage && (
+            <div className="mt-2 p-3 rounded-xl border border-gray-700 bg-gray-800/60 flex flex-col gap-2">
+              <span className="text-xs font-medium text-gray-300">Disk Usage</span>
+              {/* Progress Bar */}
+              <div className="w-full h-2 rounded-full bg-gray-700 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    diskUsage.percent >= 90
+                      ? 'bg-red-500'
+                      : diskUsage.percent >= 70
+                      ? 'bg-yellow-500'
+                      : 'bg-blue-500'
+                  }`}
+                  style={{ width: `${Math.min(diskUsage.percent, 100)}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>{diskUsage.percent}%</span>
+                <span className={diskUsage.percent >= 90 ? 'text-red-400' : diskUsage.percent >= 70 ? 'text-yellow-400' : 'text-gray-400'}>
+                  {diskUsage.percent >= 90 ? 'Critical' : diskUsage.percent >= 70 ? 'Warning' : 'OK'}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5 text-xs text-gray-500">
+                <div className="flex justify-between">
+                  <span>Used</span>
+                  <span className="text-gray-300">{formatSize(diskUsage.used)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Free</span>
+                  <span className="text-gray-300">{formatSize(diskUsage.free)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Total</span>
+                  <span className="text-gray-300">{formatSize(diskUsage.total)}</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Right Panel ──────────────────────────────────────── */}

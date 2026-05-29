@@ -41,7 +41,12 @@ function loadSavedLayout(): LayoutItem[] {
         }))
         localStorage.setItem(LS_KEY, JSON.stringify(parsed))
       }
-      return parsed.map(item => ({ minW: 3, minH: 3, ...item }))
+      // 없는 슬롯은 DEFAULT_LAYOUT으로 채움
+      const merged = DEFAULT_LAYOUT.map(def => {
+        const found = parsed.find(p => p.i === def.i)
+        return found ? { minW: 3, minH: 3, ...found } : def
+      })
+      return merged
     }
   } catch { /* ignore */ }
   return DEFAULT_LAYOUT
@@ -96,18 +101,19 @@ export default function Dashboard() {
     return () => ro.disconnect()
   }, [])
 
-  // 백엔드에서 레이아웃 로드 (마운트 시)
+  // 백엔드에서 레이아웃 로드 (마운트 시) — 없는 슬롯은 DEFAULT_LAYOUT으로 채움
   useEffect(() => {
     const loadLayoutFromBackend = async () => {
       try {
         const serverLayout = await api.fetchLayoutSettings()
         if (serverLayout && Object.keys(serverLayout).length > 0) {
-          const layoutArray = Object.values(serverLayout) as LayoutItem[]
-          setLayout(layoutArray.map(item => ({
-            minW: 3, minH: 3, ...item,
-            w: Math.max(item.w ?? 4, 3),
-            h: Math.max(item.h ?? 4, 3),
-          })))
+          const serverItems = Object.values(serverLayout) as LayoutItem[]
+          const merged = DEFAULT_LAYOUT.map(def => {
+            const saved = serverItems.find(s => s.i === def.i)
+            if (saved) return { minW: 3, minH: 3, ...saved, w: Math.max(saved.w ?? 4, 3), h: Math.max(saved.h ?? 4, 3) }
+            return def
+          })
+          setLayout(merged)
         }
       } catch {
         // 백엔드 실패 시 localStorage 사용 (이미 초기화됨)
@@ -129,7 +135,7 @@ export default function Dashboard() {
     }, 500)
   }, [])
 
-  const loadLines = async () => {
+  const loadLines = useCallback(async () => {
     try {
       const data = await api.fetchLines()
       setLines(data)
@@ -137,17 +143,18 @@ export default function Dashboard() {
     } catch {
       // 백엔드 미실행 시 무시
     }
-  }
+  }, [])
 
-  // 초기화 중인 라인이 있으면 빠르게 폴링 (500ms), 아니면 3초
+  // 상태별 폴링 주기: initializing 500ms, running 1000ms, 나머지 3000ms
   const hasInitializing = lines.some(l => l.stats.status === 'initializing')
+  const hasRunning = lines.some(l => l.stats.status === 'running')
 
   useEffect(() => {
     loadLines()
-    const interval = hasInitializing ? 500 : 3000
+    const interval = hasInitializing ? 500 : hasRunning ? 1000 : 3000
     const id = setInterval(loadLines, interval)
     return () => clearInterval(id)
-  }, [hasInitializing])
+  }, [hasInitializing, hasRunning])
 
   const handleToggle = async (lineName: string) => {
     const line = lines.find(l => l.config.line_name === lineName)
@@ -254,6 +261,20 @@ export default function Dashboard() {
     } catch (e) {
       console.error('Detector config update failed:', e)
       // 실패 시 서버 상태로 복구
+      await loadLines()
+    }
+  }
+
+  const handleUpdateRejectConfig = async (
+    lineName: string,
+    productName: string,
+    rejectConfig: Record<string, any>
+  ) => {
+    try {
+      await api.updateRejectConfig(lineName, productName, rejectConfig)
+      await loadLines()
+    } catch (e) {
+      console.error('Reject config update failed:', e)
       await loadLines()
     }
   }
@@ -369,32 +390,6 @@ export default function Dashboard() {
         <div className="absolute -top-6 left-[72%] w-80 h-36 bg-indigo-400/22 rounded-full blur-3xl" />
         <div className="absolute -top-10 left-[85%] w-72 h-48 bg-blue-500/25 rounded-full blur-3xl" />
 
-        {/* 물결 — 5개 레이어 (중간 진폭) */}
-        <svg className="absolute w-[300%] h-full opacity-[0.09]" viewBox="0 0 2880 200" preserveAspectRatio="none">
-          <path fill="currentColor" className="text-blue-400" d="M0,50 C360,100 720,20 1080,80 C1260,110 1380,35 1440,50 C1800,100 2160,20 2520,80 C2700,110 2820,35 2880,50 L2880,0 L0,0 Z">
-            <animateTransform attributeName="transform" type="translate" values="0,0;-1440,0;0,0" dur="60s" repeatCount="indefinite" />
-          </path>
-        </svg>
-        <svg className="absolute w-[300%] h-full opacity-[0.07]" viewBox="0 0 2880 200" preserveAspectRatio="none">
-          <path fill="currentColor" className="text-cyan-400" d="M0,70 C240,30 480,110 720,45 C960,20 1200,95 1440,70 C1680,30 1920,110 2160,45 C2400,20 2640,95 2880,70 L2880,0 L0,0 Z">
-            <animateTransform attributeName="transform" type="translate" values="-1440,0;0,0;-1440,0" dur="50s" repeatCount="indefinite" />
-          </path>
-        </svg>
-        <svg className="absolute w-[300%] h-full opacity-[0.05]" viewBox="0 0 2880 200" preserveAspectRatio="none">
-          <path fill="currentColor" className="text-indigo-400" d="M0,55 C300,105 600,20 900,85 C1150,115 1350,30 1440,55 C1740,105 2040,20 2340,85 C2590,115 2790,30 2880,55 L2880,0 L0,0 Z">
-            <animateTransform attributeName="transform" type="translate" values="0,0;-1440,0;0,0" dur="70s" repeatCount="indefinite" />
-          </path>
-        </svg>
-        <svg className="absolute w-[300%] h-full opacity-[0.06]" viewBox="0 0 2880 200" preserveAspectRatio="none">
-          <path fill="currentColor" className="text-violet-400" d="M0,65 C200,25 500,110 720,50 C1000,20 1250,100 1440,65 C1640,25 1940,110 2160,50 C2440,20 2690,100 2880,65 L2880,0 L0,0 Z">
-            <animateTransform attributeName="transform" type="translate" values="-1440,0;0,0;-1440,0" dur="56s" repeatCount="indefinite" />
-          </path>
-        </svg>
-        <svg className="absolute w-[300%] h-full opacity-[0.04]" viewBox="0 0 2880 200" preserveAspectRatio="none">
-          <path fill="currentColor" className="text-purple-300" d="M0,60 C360,110 720,25 1080,90 C1260,105 1380,40 1440,60 C1800,110 2160,25 2520,90 C2700,105 2820,40 2880,60 L2880,0 L0,0 Z">
-            <animateTransform attributeName="transform" type="translate" values="0,0;-1440,0;0,0" dur="64s" repeatCount="indefinite" />
-          </path>
-        </svg>
       </div>
 
       {/* 헤더 */}
@@ -528,6 +523,7 @@ export default function Dashboard() {
                     onSwitchProduct={handleSwitchProduct}
                     onUpdateThreshold={handleUpdateThreshold}
                     onUpdateDetectorConfig={handleUpdateDetectorConfig}
+                    onUpdateRejectConfig={handleUpdateRejectConfig}
                     editMode={editMode}
                     gridSize={editMode ? { w: layout[i]?.w ?? 0, h: layout[i]?.h ?? 0 } : undefined}
                   />
@@ -536,7 +532,7 @@ export default function Dashboard() {
                 )}
               </div>
             )
-          })}
+          }).filter(Boolean)}
         </ReactGridLayout>
       </div>
 

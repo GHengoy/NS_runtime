@@ -12,6 +12,7 @@ import {
   Clock,
 } from 'lucide-react'
 import { fetchHistory, fetchHistoryFilters, historyImageUrl } from '../api'
+import { WS_BASE } from '../config'
 import type { HistoryRecord, HistoryFilters } from '../types'
 
 const PAGE_SIZE = 60
@@ -34,6 +35,7 @@ export default function History() {
   const [filterLine, setFilterLine] = useState('')
   const [filterClass, setFilterClass] = useState('')
   const [filterDate, setFilterDate] = useState('')
+  const [filterDetector, setFilterDetector] = useState('')
   const [filterCategory, setFilterCategory] = useState<'all' | 'defect' | 'borderline'>('all')
   const [sort, setSort] = useState<'newest' | 'oldest' | 'confidence_high' | 'confidence_low'>('newest')
   const [page, setPage] = useState(1)
@@ -42,7 +44,7 @@ export default function History() {
   const [records, setRecords] = useState<HistoryRecord[]>([])
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(0)
-  const [filters, setFilters] = useState<HistoryFilters>({ lines: [], classes: [], dates: [] })
+  const [filters, setFilters] = useState<HistoryFilters>({ lines: [], classes: [], dates: [], detector_types: [] })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -52,6 +54,53 @@ export default function History() {
 
   // ── AbortController for fetch cancellation ──
   const abortControllerRef = useRef<AbortController | null>(null)
+
+  // ── Refs for WebSocket closure access to current filter state ──
+  const filterRef = useRef({ filterCategory, filterLine, filterClass, filterDate, sort, page })
+  useEffect(() => {
+    filterRef.current = { filterCategory, filterLine, filterClass, filterDate, sort, page }
+  }, [filterCategory, filterLine, filterClass, filterDate, sort, page])
+
+  // ── Real-time defect push via /ws/defects ──
+  useEffect(() => {
+    const ws = new WebSocket(`${WS_BASE}/ws/defects`)
+
+    let pingInterval: ReturnType<typeof setInterval> | null = null
+
+    ws.onopen = () => {
+      // keep-alive ping every 20s
+      pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+      }, 20000)
+    }
+
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        if (data.type !== 'new_defect') return
+
+        const f = filterRef.current
+        // Apply current filters — skip if record doesn't match
+        if (f.filterCategory !== 'all' && data.category !== f.filterCategory) return
+        if (f.filterLine && data.line_name !== f.filterLine) return
+        if (f.filterClass && data.class_name !== f.filterClass) return
+        if (f.filterDate && data.date !== f.filterDate) return
+        // Only inject at page 1 sorted by newest (otherwise position would be wrong)
+        if (f.page !== 1 || f.sort !== 'newest') return
+
+        const { type: _type, ...rec } = data as { type: string } & HistoryRecord
+        setRecords(prev => [rec, ...prev].slice(0, PAGE_SIZE))
+        setTotal(prev => prev + 1)
+      } catch {}
+    }
+
+    ws.onerror = () => {}
+
+    return () => {
+      if (pingInterval) clearInterval(pingInterval)
+      ws.close()
+    }
+  }, []) // connect once on mount
 
   // ── Load filters on mount ──
   useEffect(() => {
@@ -78,6 +127,7 @@ export default function History() {
         line: filterLine || undefined,
         class_name: filterClass || undefined,
         date: filterDate || undefined,
+        detector_type: filterDetector || undefined,
         page,
         page_size: PAGE_SIZE,
         sort,
@@ -94,7 +144,7 @@ export default function History() {
     } finally {
       setLoading(false)
     }
-  }, [filterCategory, filterLine, filterClass, filterDate, page, sort])
+  }, [filterCategory, filterLine, filterClass, filterDate, filterDetector, page, sort])
 
   useEffect(() => {
     loadRecords()
@@ -109,7 +159,7 @@ export default function History() {
   // Reset page when filters change
   useEffect(() => {
     setPage(1)
-  }, [filterCategory, filterLine, filterClass, filterDate, sort])
+  }, [filterCategory, filterLine, filterClass, filterDate, filterDetector, sort])
 
   // Client-side search filter (on the loaded page)
   const displayed = search
@@ -205,6 +255,20 @@ export default function History() {
           </select>
         </div>
 
+        {/* Detector type filter */}
+        {filters.detector_types.length > 0 && (
+          <select
+            value={filterDetector}
+            onChange={e => setFilterDetector(e.target.value)}
+            className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 focus:outline-none focus:border-gray-700"
+          >
+            <option value="">All Detectors</option>
+            {filters.detector_types.map(dt => (
+              <option key={dt} value={dt}>{dt}</option>
+            ))}
+          </select>
+        )}
+
         {/* Class filter */}
         <select
           value={filterClass}
@@ -284,6 +348,13 @@ export default function History() {
                       {d.category}
                     </span>
                   </div>
+                  {d.detector_type && (
+                    <div className="absolute top-1.5 right-1.5">
+                      <span className="bg-blue-900/80 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-medium uppercase">
+                        {d.detector_type}
+                      </span>
+                    </div>
+                  )}
                   <div className="absolute bottom-1.5 left-1.5">
                     <span className="bg-gray-900/80 text-white text-[10px] px-1.5 py-0.5 rounded font-medium uppercase">
                       {d.class_name}
@@ -442,6 +513,9 @@ export default function History() {
                     </span>
                   </span>
                   <span>Class: <span className="text-gray-200">{selected.class_name}</span></span>
+                  {selected.detector_type && (
+                    <span>Detector: <span className="text-blue-300">{selected.detector_type}</span></span>
+                  )}
                 </div>
                 <div className="flex items-center gap-4">
                   <span>{selected.date}</span>

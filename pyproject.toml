@@ -1,7 +1,7 @@
 [project]
-name = "ansung-code"
+name = "ns-runtime"
 version = "0.1.0"
-description = "Add your description here"
+description = "Real-time AI vision inspection system for factory production lines"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,9 +9,13 @@ dependencies = [
     "fastapi>=0.133.0",
     "opencv-python>=4.13.0.92",
     "paddleocr>=3.4.0",
-    "paddlepaddle>=3.3.0",
     "pypylon>=26.1.0",
     "python-multipart>=0.0.22",
     "ultralytics>=8.4.16",
     "uvicorn[standard]>=0.41.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
 ]

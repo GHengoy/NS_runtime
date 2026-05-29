@@ -7,7 +7,7 @@
 공장 생산 라인용 AI 비전 검사 프레임워크입니다. YOLOv12(Ultralytics)와 Basler GigE 카메라를 사용해 제품 불량을 실시간으로 감지하고, 컨베이어 벨트의 리젝트 신호를 제어합니다.
 
 ## 참고할 폴더 : inspection_framework
-sample_Ansung_factory 폴더는 무시
+sample_Anseong_factory 폴더는 무시
 
 ## 프로그램 사용자 : 미국인
 화면 내 텍스트는 영어
@@ -63,7 +63,7 @@ inspection_framework/
 ├── inspection_runtime.py   — run_local(): 단독 실행용 OpenCV 디스플레이 래퍼
 └── example_pinhole.py      — 템플릿: 이 파일을 복사해서 새 라인을 만듭니다
 
-sample_Ansung_factory/      — 레거시 YOLOv4/Darknet 구현체 (참고용만)
+sample_Anseong_factory/      — 레거시 YOLOv4/Darknet 구현체 (참고용만)
 ```
 
 ### 데이터 흐름

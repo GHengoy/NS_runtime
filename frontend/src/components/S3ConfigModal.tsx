@@ -17,6 +17,7 @@ interface Props {
 
 export default function S3ConfigModal({ open, onClose, onSaved }: Props) {
   const [localRetentionDays, setLocalRetentionDays] = useState(180)
+  const [saveRoot, setSaveRoot] = useState('./data')
   const [storageType, setStorageType] = useState<StorageType>('local')
   const [s3Bucket, setS3Bucket] = useState('')
   const [s3Region, setS3Region] = useState('us-east-1')
@@ -42,6 +43,7 @@ export default function S3ConfigModal({ open, onClose, onSaved }: Props) {
     setLoading(true)
     fetchStorageSettings()
       .then(s => {
+        setSaveRoot(s.save_root || './data')
         setLocalRetentionDays(s.local_retention_days ?? 180)
         setStorageType(s.storage_type)
         setS3Bucket(s.s3_bucket)
@@ -78,6 +80,7 @@ export default function S3ConfigModal({ open, onClose, onSaved }: Props) {
   }
 
   const currentPayload = () => ({
+    save_root: saveRoot,
     local_retention_days: localRetentionDays,
     storage_type: storageType,
     s3_bucket: s3Bucket,

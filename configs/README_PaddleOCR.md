@@ -104,7 +104,7 @@ run_local(config)
 
 ```bash
 # 속도 최우선 버전 테스트
-cd /Users/nongshim/Desktop/Ansung_code
+cd /Users/nongshim/Desktop/Anseong_code
 python -c "
 from inspection_framework.config import InspectionConfig
 from inspection_framework.inspection_runtime import run_local

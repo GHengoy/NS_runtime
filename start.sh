@@ -1,51 +1,50 @@
 #!/bin/bash
-# start.sh — Ansung Vision Inspection 개발 서버 실행
-# 사용법: ./start.sh
+# start.sh — Start NS Runtime (backend + frontend)
+# Usage: ./start.sh
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "=============================="
-echo "  Ansung Vision Inspection"
-echo "=============================="
+# Add uv to PATH in case this is a fresh terminal
+export PATH="$HOME/.local/bin:$PATH"
 
-# ── 0) 기존 프로세스 정리 ────────────────────────────────────────────────
+echo "========================================"
+echo "  NS Runtime"
+echo "========================================"
+
+# ── 0) Kill existing processes on ports 8000 / 5173 ──────
 echo ""
-echo "[0/2] 기존 프로세스 정리 중..."
-lsof -ti :8000 | xargs kill -9 2>/dev/null && echo "  port 8000 해제" || true
-lsof -ti :5173 | xargs kill -9 2>/dev/null && echo "  port 5173 해제" || true
+echo "[0/2] Cleaning up existing processes..."
+lsof -ti :8000 | xargs kill -9 2>/dev/null && echo "  Released port 8000" || true
+lsof -ti :5173 | xargs kill -9 2>/dev/null && echo "  Released port 5173" || true
 sleep 1
 
-# ── 1) FastAPI 백엔드 ────────────────────────────────────────────────────
-echo "[1/2] FastAPI 백엔드 시작 (port 8000)..."
+# ── 1) FastAPI backend ────────────────────────────────────
+echo "[1/2] Starting FastAPI backend (port 8000)..."
 cd "$ROOT_DIR"
-uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000 &
+uv run uvicorn backend.main:app --host 0.0.0.0 --port 8000 --no-access-log &
 BACKEND_PID=$!
 
-# ── 2) React 프론트엔드 ──────────────────────────────────────────────────
-echo "[2/2] React 프론트엔드 시작 (port 5173)..."
+# ── 2) React frontend ─────────────────────────────────────
+echo "[2/2] Starting React frontend (port 5173)..."
 cd "$ROOT_DIR/frontend"
-npm run dev &
+npm run preview &
 FRONTEND_PID=$!
 
 echo ""
-echo "-------------------------------"
-echo "  로컬:    http://localhost:5173"
-echo "  외부IP:  http://{YOUR_IP}:5173"
-echo "  백엔드:  http://localhost:8000"
-echo "  API 문서: http://localhost:8000/docs"
-echo "-------------------------------"
-echo "  종료: Ctrl+C"
+echo "----------------------------------------"
+echo "  Local:    http://localhost:5173"
+echo "  Network:  http://$(hostname -I | awk '{print $1}'):5173"
+echo "  Backend:  http://localhost:8000"
+echo "  API Docs: http://localhost:8000/docs"
+echo "----------------------------------------"
+echo "  Press Ctrl+C to stop"
 echo ""
 
-# 브라우저 자동 오픈 (프론트엔드 준비 대기)
+# Open browser after short delay
 sleep 3
-echo "🌐 브라우저 열기..."
-open -a "Google Chrome" "http://localhost:5173" 2>/dev/null || \
-  xdg-open "http://localhost:5173" 2>/dev/null || \
-  start "http://localhost:5173" 2>/dev/null || \
-  echo "⚠️  브라우저 자동 시작 실패. 수동으로 http://localhost:5173 접속하세요."
+xdg-open "http://localhost:5173" 2>/dev/null || true
 
-# Ctrl+C 시 자식 프로세스 정리
-trap "echo ''; echo '종료 중...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit 0" INT TERM
+# Clean up child processes on exit
+trap "echo ''; echo 'Shutting down...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit 0" INT TERM
 
 wait

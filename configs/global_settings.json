@@ -1,5 +1,6 @@
 {
   "storage": {
+    "save_root": "",
     "local_retention_days": 180,
     "storage_type": "local",
     "s3_bucket": "",
@@ -11,7 +12,7 @@
     "s3_cleanup_interval_hours": 6
   },
   "admin": {
-    "password": "1"
+    "password": "1234"
   },
   "layout": {
     "0": {
@@ -44,6 +45,83 @@
       "h": 9,
       "minW": 3,
       "minH": 3,
+      "moved": false,
+      "static": false
+    },
+    "3": {
+      "minW": 3,
+      "minH": 3,
+      "i": "3",
+      "x": 0,
+      "y": 9,
+      "w": 9,
+      "h": 3,
+      "moved": false,
+      "static": false
+    },
+    "4": {
+      "minW": 3,
+      "minH": 3,
+      "i": "4",
+      "x": 9,
+      "y": 9,
+      "w": 9,
+      "h": 3,
+      "moved": false,
+      "static": false
+    },
+    "5": {
+      "minW": 3,
+      "minH": 3,
+      "i": "5",
+      "x": 18,
+      "y": 9,
+      "w": 9,
+      "h": 3,
+      "moved": false,
+      "static": false
+    },
+    "6": {
+      "minW": 3,
+      "minH": 3,
+      "i": "6",
+      "x": 25,
+      "y": 15,
+      "w": 9,
+      "h": 3,
+      "moved": false,
+      "static": false
+    },
+    "7": {
+      "minW": 3,
+      "minH": 3,
+      "i": "7",
+      "x": 36,
+      "y": 15,
+      "w": 8,
+      "h": 3,
+      "moved": false,
+      "static": false
+    },
+    "8": {
+      "minW": 3,
+      "minH": 3,
+      "i": "8",
+      "x": 44,
+      "y": 9,
+      "w": 8,
+      "h": 3,
+      "moved": false,
+      "static": false
+    },
+    "9": {
+      "minW": 3,
+      "minH": 3,
+      "i": "9",
+      "x": 27,
+      "y": 12,
+      "w": 20,
+      "h": 3,
       "moved": false,
       "static": false
     }

@@ -70,7 +70,7 @@ export default function Sidebar() {
 
       {/* 하단 영역 */}
       <div className="border-t border-gray-700/40">
-        {/* NONGSHIM USA 브랜드 */}
+        {/* NS AI 브랜드 */}
         <div
           className="flex justify-center"
           style={{ padding: expanded ? '16px 12px 8px' : '16px 0 8px' }}
@@ -84,7 +84,7 @@ export default function Sidebar() {
               fontSize: expanded ? '12px' : '25px',
             }}
           >
-            NONGSHIM USA
+            NS AI
           </p>
         </div>
         {/* 버전 */}

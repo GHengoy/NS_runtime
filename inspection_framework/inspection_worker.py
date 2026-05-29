@@ -34,12 +34,15 @@ inspection_worker.py — 백그라운드 검사 워커
 """
 
 import cv2
+import logging
 import time
 import threading
 import traceback
-from datetime import date
+from datetime import date, datetime
 from queue import Queue, Full
 from typing import Callable, Optional
+
+_logger = logging.getLogger(__name__)
 
 from config import InspectionConfig
 # 나머지 모듈은 _build_modules() 에서 lazy import
@@ -130,6 +133,26 @@ class InspectionWorker:
         self._rejecter = None
         self._data_manager = None
 
+        # 시간 기반 리젝트 딜레이 (프레임 기반 대신 순수 시간 사용)
+        self._time_based_reject: bool = False
+        self._reject_delay_sec: float = 0.0
+        self._pending_rejects: list = []          # Continuous 바 표시용 타임스탬프
+        self._pending_rejects_lock = threading.Lock()
+        self._cont_valve_on = False               # Continuous 모드: 현재 valve ON 상태
+
+        # 비동기 감지 (PaddleOCR / CNN 등 느린 디텍터용)
+        self._async_detect = False              # True: detection runs in bg thread
+        self._async_lock = threading.Lock()
+        self._async_input = None                # (frame, cropped) latest unprocessed
+        self._async_event = threading.Event()
+        self._async_result_lock = threading.Lock()
+        self._async_annotated = None
+        self._async_is_defect = False
+        self._async_defect_meta = None
+
+        # 원본 해상도 추적 (스트리밍 축소 전 실제 카메라 해상도)
+        self._orig_frame_size: tuple | None = None
+
     # ──────────────────────────────────────────────────────────────────
     # 공개 프로퍼티 (Read-Only)
     # ──────────────────────────────────────────────────────────────────
@@ -171,17 +194,19 @@ class InspectionWorker:
             "defect_rate":  defect_rate,
             "last_error":   self._last_error,
             "reset_date":   self._reset_date.isoformat(),
-            "reject_window_size": (
-                self._rejecter.reject_delay_frames if self._rejecter is not None else 0
-            ),
-            "reject_window_marks": (
-                [i for i, v in enumerate(self._rejecter.window_state) if v == 1]
-                if self._rejecter is not None else []
-            ),
+            **(self._build_valve_bar_meta()
+               if getattr(self.config, 'collection_mode', 'auto') == 'continuous'
+               else {
+                   "reject_window_size": len(self._rejecter.window_state) if self._rejecter else 0,
+                   "reject_window_marks": ([i for i, v in enumerate(self._rejecter.window_state) if v == 1]
+                                           if self._rejecter else []),
+               }),
             # 초기화 진행 상태
             "init_stage":   self._init_stage,
             "init_current": self._init_current,
             "init_total":   self._init_total,
+            # 원본 카메라 해상도 (스트리밍 축소 전)
+            "orig_frame_size": list(self._orig_frame_size) if self._orig_frame_size else None,
         }
 
     # ──────────────────────────────────────────────────────────────────
@@ -226,6 +251,12 @@ class InspectionWorker:
         """
         print(f"[Worker:{self.config.line_name}] 종료 요청 중...")
         self._stop_event.set()
+        # 즉시 리젝트 OFF (스레드 종료 대기 없이 바로 신호 차단)
+        if self._camera is not None:
+            try:
+                self._camera.set_reject_output(False)
+            except Exception:
+                pass
 
     def join(self, timeout: float = 5.0):
         """
@@ -289,6 +320,8 @@ class InspectionWorker:
                 crop_region=c.crop_region,
             )
         self._camera.open()
+        # 카메라 연결 직후 리젝트 신호 강제 OFF (이전 세션에서 ON 상태로 남은 경우 대비)
+        self._camera.set_reject_output(False)
 
         # Force trigger mode if configured (Basler only, 'auto' = use PFS setting)
         # Must stop grabbing first — TriggerMode cannot be changed while grabbing.
@@ -304,23 +337,25 @@ class InspectionWorker:
             except Exception as e:
                 print(f"[Worker:{c.line_name}] Warning: could not force TriggerMode: {e}")
 
-        # 트리거 모드 전용: 센서 인식 후 촬영 딜레이 [µs]
-        trigger_delay = getattr(c, 'trigger_delay_us', None)
-        if trigger_delay and force_trigger == 'trigger' and c.camera_type == 'basler':
+        # 트리거 모드 전용: 센서 인식 후 촬영 딜레이 [sec → µs 변환]
+        trigger_delay_sec = getattr(c, 'trigger_delay_sec', None)
+        if trigger_delay_sec and force_trigger == 'trigger' and c.camera_type == 'basler':
             try:
-                self._camera.set_trigger_delay(float(trigger_delay))
-                print(f"[Worker:{c.line_name}] TriggerDelayAbs → {trigger_delay} µs")
+                delay_us = float(trigger_delay_sec) * 1_000_000
+                self._camera.set_trigger_delay(delay_us)
+                print(f"[Worker:{c.line_name}] TriggerDelayAbs → {delay_us} µs ({trigger_delay_sec} sec)")
             except Exception as e:
                 print(f"[Worker:{c.line_name}] Warning: could not set trigger delay: {e}")
 
-        # 트리거 노이즈 제거: LineDebouncerHighTime [µs]
-        debounce_us = getattr(c, 'trigger_debounce_us', None)
-        if debounce_us and force_trigger == 'trigger' and c.camera_type == 'basler':
+        # 트리거 노이즈 제거: LineDebouncerHighTime [sec → µs 변환]
+        debounce_sec = getattr(c, 'trigger_debounce_sec', None)
+        if debounce_sec and force_trigger == 'trigger' and c.camera_type == 'basler':
             try:
+                debounce_us = float(debounce_sec) * 1_000_000
                 cam = self._camera._cam
                 cam.LineSelector.SetValue("Line1")
-                cam.LineDebouncerHighTimeAbs.SetValue(float(debounce_us))
-                print(f"[Worker:{c.line_name}] LineDebouncerHighTime → {debounce_us} µs")
+                cam.LineDebouncerHighTimeAbs.SetValue(debounce_us)
+                print(f"[Worker:{c.line_name}] LineDebouncerHighTime → {debounce_us} µs ({debounce_sec} sec)")
             except Exception as e:
                 print(f"[Worker:{c.line_name}] Warning: could not set debounce: {e}")
 
@@ -329,8 +364,10 @@ class InspectionWorker:
         c = self.config
         from detector import create_detector                # noqa: PLC0415
 
-        effective_thresholds = dict(c.class_thresholds or {})
-        self._original_class_thresholds = c.class_thresholds
+        # class_thresholds: None 또는 {} → 모든 클래스 감지 (threshold 0.5)
+        raw_thr = c.class_thresholds if c.class_thresholds else None
+        effective_thresholds = dict(raw_thr or {})
+        self._original_class_thresholds = raw_thr
         if c.save_thresholds:
             for cls, thr in c.save_thresholds.items():
                 if cls in effective_thresholds:
@@ -341,7 +378,7 @@ class InspectionWorker:
         self._detector = create_detector(
             detector_type=getattr(c, 'detector_type', 'yolo'),
             model_path=c.model_path,
-            class_thresholds=effective_thresholds if effective_thresholds else c.class_thresholds,
+            class_thresholds=effective_thresholds if effective_thresholds else None,
             device=c.device,
             detector_config=getattr(c, 'detector_config', None),
         )
@@ -371,15 +408,16 @@ class InspectionWorker:
         if self._camera is not None:
             from rejecter import Rejecter                   # noqa: PLC0415
 
-            # reject_delay_seconds가 설정된 경우 연속 모드에서 FPS 측정 후 프레임 수로 변환
             delay_frames = c.reject_delay_frames
-            reject_delay_sec = getattr(c, 'reject_delay_seconds', None)
-            is_continuous = getattr(c, 'collection_mode', 'auto') in ('continuous', 'auto')
-            if reject_delay_sec and reject_delay_sec > 0 and is_continuous:
-                measured_fps = self._measure_camera_fps(n_frames=20)
-                delay_frames = max(1, round(measured_fps * reject_delay_sec))
-                print(f"[Worker:{c.line_name}] reject_delay_seconds={reject_delay_sec}s "
-                      f"→ {delay_frames} frames (@ {measured_fps:.1f} fps)")
+            collection_mode = getattr(c, 'collection_mode', 'auto')
+
+            if collection_mode == 'continuous':
+                # ── Continuous 모드: reject_delay 없이 valve delay만 사용 ──
+                # 불량 감지 즉시 → pre_valve_delay 후 → valve ON
+                delay_frames = 0
+                print(f"[Worker:{c.line_name}] Continuous mode: "
+                      f"no reject delay, valve_on={c.time_valve_on}s, "
+                      f"pre_valve_delay={c.pre_valve_delay}s")
 
             self._rejecter = Rejecter(
                 camera=self._camera,
@@ -388,6 +426,7 @@ class InspectionWorker:
                 reject_mode=getattr(c, 'reject_mode', 'individual'),
                 time_valve_on=c.time_valve_on,
                 pre_valve_delay=c.pre_valve_delay,
+                debug=True,
             )
         else:
             self._rejecter = None
@@ -415,13 +454,13 @@ class InspectionWorker:
 
             # save_thresholds 사용 시: 원래 class_thresholds로 is_defect 재평가
             # (detector에는 낮은 effective_thresholds를 전달했으므로)
+            # 단, class_thresholds에 없는 라벨은 디텍터의 원래 판정 유지 (OCR 등)
             orig_thr = getattr(self, '_original_class_thresholds', None)
             if orig_thr is not None and self.config.save_thresholds:
                 for det in detections:
                     if det.label in orig_thr:
                         det.is_defect = det.confidence >= orig_thr[det.label]
-                    else:
-                        det.is_defect = False
+                    # else: 디텍터 원래 is_defect 유지 (OCR 패턴 매칭 등)
 
             annotated = self._detector.draw(cropped, detections)
             is_defect = self._detector.has_defect(detections)
@@ -432,13 +471,17 @@ class InspectionWorker:
 
         # ── 리젝트 신호 (class_thresholds 기준) ──────────────────────
         if self._rejecter is not None:
-            self._rejecter.push(is_defect=is_defect)
+            collection_mode = getattr(self.config, 'collection_mode', 'auto')
+            if collection_mode != 'continuous':
+                # Trigger/Auto: 프레임 기반 슬라이딩 윈도우 구동 + 리젝트 발사
+                self._rejecter.push(is_defect=is_defect)
+            # Continuous: 리젝트는 _push_frame에서 바 위치 기반으로 ON/OFF
 
         # ── 이미지 저장 (save_thresholds 기준) ───────────────────────
-        # 저장 폴더명: active_product > project_name > line_name 순으로 폴백
-        line = getattr(self.config, 'active_product', None) or getattr(self.config, 'project_name', None) or self.config.line_name
+        line = self.config.line_name
         saved_category = None
         saved_dets = None
+        saved_paths = (None, None)
         if self.config.save_thresholds:
             save_thr = self.config.save_thresholds
             save_dets = [
@@ -447,27 +490,45 @@ class InspectionWorker:
             ]
             if save_dets:
                 if is_defect:
-                    self._data_manager.save_defect(
+                    saved_paths = self._data_manager.save_defect(
                         image=cropped, annotated=annotated,
                         detections=detections, line_name=line,
                     )
                     saved_category = "defect"
                     saved_dets = detections
                 else:
-                    self._data_manager.save_borderline(
+                    saved_paths = self._data_manager.save_borderline(
                         image=cropped, annotated=annotated,
                         detections=save_dets, line_name=line,
                     )
                     saved_category = "borderline"
-        else:
-            # save_thresholds 미설정: 불량이면 저장
-            if is_defect:
-                self._data_manager.save_defect(
+                    saved_dets = save_dets
+            elif is_defect:
+                # save_thresholds에 없는 레이블(OCR 등)이지만 불량 판정된 경우
+                saved_paths = self._data_manager.save_defect(
                     image=cropped, annotated=annotated,
                     detections=detections, line_name=line,
                 )
                 saved_category = "defect"
                 saved_dets = detections
+        else:
+            # save_thresholds 미설정: 불량이면 저장
+            if is_defect:
+                saved_paths = self._data_manager.save_defect(
+                    image=cropped, annotated=annotated,
+                    detections=detections, line_name=line,
+                )
+                saved_category = "defect"
+                saved_dets = detections
+
+        # ── DEBUG: 감지 결과 추적 (borderline 진단용) ─────────────────
+        if detections:
+            _det_str = ", ".join(
+                f"{d.label}:{d.confidence:.2f}({'R' if d.is_defect else 'b'})"
+                for d in detections
+            )
+            _save_str = saved_category or "skip"
+            print(f"[DETECT:{line}] {_det_str} → {_save_str}")
 
         # ── 저장 후 콜백 (S3 업로드 등) ───────────────────────────────
         if saved_category is not None and self._on_save_callback is not None:
@@ -477,11 +538,58 @@ class InspectionWorker:
                     save_root=self.config.save_root,
                     line_name=line,
                     detections=saved_dets or detections,
+                    saved_paths=saved_paths,
                 )
             except Exception:
                 pass  # 콜백 실패가 검사 루프를 중단하지 않도록
 
-        return annotated, is_defect
+        # ── WS 즉시 전달용 defect_meta 구성 ──────────────────────────
+        defect_meta = None
+        if saved_category is not None and saved_paths[0] is not None:
+            best_det = max(saved_dets, key=lambda d: d.confidence) if saved_dets else None
+            defect_meta = {
+                "defect_image_url": "/api/history/image?path=" + saved_paths[0],
+                "defect_mark_url": "/api/history/image?path=" + saved_paths[1] if saved_paths[1] else None,
+                "defect_class": best_det.label if best_det else "unknown",
+                "defect_conf": round(best_det.confidence, 4) if best_det else 0.0,
+                "defect_ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "defect_category": saved_category,
+            }
+
+        return annotated, is_defect, defect_meta
+
+    def _async_detect_fn(self):
+        """비동기 감지 스레드: 느린 디텍터(OCR/CNN)를 카메라 루프와 분리하여 실행.
+
+        카메라 루프가 최신 프레임을 _async_input에 쓰면, 이 스레드가 꺼내서
+        _default_process()를 실행한 뒤 결과를 _async_annotated에 저장합니다.
+        카메라 루프는 기다리지 않고 최신 결과를 스트리밍합니다.
+        """
+        while not self._stop_event.is_set():
+            if not self._async_event.wait(timeout=0.05):
+                continue
+            self._async_event.clear()
+
+            with self._async_lock:
+                item = self._async_input
+                self._async_input = None
+
+            if item is None:
+                continue
+
+            frame, cropped = item
+            try:
+                annotated, is_defect, defect_meta = self._default_process(frame, cropped)
+                if is_defect:
+                    self._defect_count += 1
+                    with self._pending_rejects_lock:
+                        self._pending_rejects.append(time.time())
+                with self._async_result_lock:
+                    self._async_annotated = annotated
+                    self._async_is_defect = is_defect
+                    self._async_defect_meta = defect_meta
+            except Exception:
+                traceback.print_exc()
 
     def _run_loop(self):
         """백그라운드 스레드: 단계별 초기화 → 검사 루프."""
@@ -544,6 +652,18 @@ class InspectionWorker:
             self._init_current = 0
             self._status = STATUS_RUNNING
 
+            # 비동기 감지 스레드 시작 (느린 디텍터: paddleocr, cnn 등)
+            _det_type = getattr(c, 'detector_type', 'yolo')
+            self._async_detect = (_det_type not in ('yolo', None, '') and
+                                   self._process_fn is None)
+            if self._async_detect:
+                threading.Thread(
+                    target=self._async_detect_fn,
+                    name=f"async-detect-{c.line_name}",
+                    daemon=True,
+                ).start()
+                print(f"[Worker:{c.line_name}] Async detection enabled (detector={_det_type})")
+
             # ── 검사 루프 ────────────────────────────────────────────
             while not self._stop_event.is_set():
                 loop_start = time.time()
@@ -562,7 +682,9 @@ class InspectionWorker:
                 if not triggered or frame is None:
                     continue
 
+                defect_meta = None
                 if self._process_fn is not None:
+                    self._data_manager.last_saved = None  # reset before each frame
                     annotated, is_defect = self._process_fn(
                         frame, cropped,
                         detector=self._detector,
@@ -570,12 +692,72 @@ class InspectionWorker:
                         data_manager=self._data_manager,
                         config=self.config,
                     )
+                    self._total_count += 1
+                    if is_defect:
+                        self._defect_count += 1
+                        with self._pending_rejects_lock:
+                            self._pending_rejects.append(time.time())
+                        # build defect_meta from DataManager.last_saved
+                        ls = self._data_manager.last_saved
+                        if ls is not None:
+                            img_path, mark_path, saved_cat, saved_dets = ls
+                            best_det = max(saved_dets, key=lambda d: d.confidence) if saved_dets else None
+                            defect_meta = {
+                                "defect_image_url": "/api/history/image?path=" + img_path,
+                                "defect_mark_url": "/api/history/image?path=" + mark_path if mark_path else None,
+                                "defect_class": best_det.label if best_det else "unknown",
+                                "defect_conf": round(best_det.confidence, 4) if best_det else 0.0,
+                                "defect_ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                                "defect_category": saved_cat,
+                            }
+                            if self._on_save_callback is not None:
+                                try:
+                                    self._on_save_callback(
+                                        category=saved_cat,
+                                        save_root=self.config.save_root,
+                                        line_name=self.config.line_name,
+                                        detections=saved_dets,
+                                        saved_paths=(img_path, mark_path),
+                                    )
+                                except Exception:
+                                    pass
+                elif self._async_detect:
+                    # 비동기 감지: 최신 프레임을 감지 스레드에 넘기고 스트리밍
+                    with self._async_lock:
+                        self._async_input = (frame, cropped)
+                    self._async_event.set()
+                    with self._async_result_lock:
+                        annotated = self._async_annotated
+                        is_defect = self._async_is_defect
+                        defect_meta = self._async_defect_meta
+                        self._async_defect_meta = None  # consume once; prevent stale repeats
+                    if annotated is None:
+                        annotated = cropped
+                    self._total_count += 1
                 else:
-                    annotated, is_defect = self._default_process(frame, cropped)
+                    annotated, is_defect, defect_meta = self._default_process(frame, cropped)
+                    self._total_count += 1
+                    if is_defect:
+                        self._defect_count += 1
+                        with self._pending_rejects_lock:
+                            self._pending_rejects.append(time.time())
 
-                self._total_count += 1
-                if is_defect:
-                    self._defect_count += 1
+                # 크롭 영역 오버레이: 전체 프레임 어둡게, 크롭 영역만 원본 밝기
+                if self.config.crop_region is not None and frame is not None:
+                    x1, y1, x2, y2 = self.config.crop_region
+                    h_f, w_f = frame.shape[:2]
+                    cx1 = max(0, x1); cy1 = max(0, y1)
+                    cx2 = min(w_f, x2); cy2 = min(h_f, y2)
+                    if cx2 > cx1 and cy2 > cy1:
+                        display = cv2.convertScaleAbs(frame, alpha=0.3, beta=0)
+                        crop_h, crop_w = cy2 - cy1, cx2 - cx1
+                        if annotated.shape[:2] != (crop_h, crop_w):
+                            annotated = cv2.resize(annotated, (crop_w, crop_h))
+                        display[cy1:cy2, cx1:cx2] = annotated
+                    else:
+                        display = annotated
+                else:
+                    display = annotated
 
                 elapsed = time.time() - loop_start
                 inst_fps = 1.0 / max(elapsed, 1e-6)
@@ -583,21 +765,24 @@ class InspectionWorker:
                 alpha = 0.1
                 self._fps = alpha * inst_fps + (1 - alpha) * self._fps
 
-                self._push_frame(annotated, is_defect)
+                self._push_frame(display, is_defect, defect_meta)
 
         except Exception as e:
+            import traceback as _tb
             self._last_error = str(e)
             self._status = STATUS_ERROR
             # 초기화 도중 실패했으면 배너 닫기
             if self._init_current < total:
                 print(f"{'=' * banner_w}")
-            print(f"\n  [{c.line_name}] ERROR: {e}\n")
+            print(f"\n  [{c.line_name}] ERROR: {e}")
+            _tb.print_exc()
+            print()
         finally:
             self._init_stage = ""
             self._init_current = 0
             self._cleanup()
 
-    def _push_frame(self, image, is_defect: bool):
+    def _push_frame(self, image, is_defect: bool, defect_meta: Optional[dict] = None):
         """
         annotated 이미지를 JPEG bytes 로 인코딩하고, window meta 와 함께
         (jpeg_bytes, meta_dict) 튜플로 frame_queue 에 넣습니다.
@@ -607,8 +792,23 @@ class InspectionWorker:
         - 스트리밍용 해상도 축소 (너비 640px 이하)
         - JPEG 품질 50 (서버 대역폭 65% 이상 감소)
         """
+        # 이미지 유효성 체크 (cropped이 0×0이거나 None이면 인코딩 실패하므로 미리 거름)
+        if image is None or image.size == 0 or image.shape[0] == 0 or image.shape[1] == 0:
+            print(f"[Worker:{self.config.line_name}] _push_frame: invalid image "
+                  f"(shape={None if image is None else image.shape}). "
+                  f"Check crop_region or detector output.")
+            return
+
+        # 불량 감지 시 영상에 빨간 테두리 그리기 (프론트 WebSocket meta 무관하게 확실히 표시)
+        if is_defect:
+            h, w = image.shape[:2]
+            t = max(3, min(h, w) // 80)  # 테두리 두께: 이미지 크기 비례
+            cv2.rectangle(image, (0, 0), (w - 1, h - 1), (0, 0, 255), t)
+
         # 스트리밍용 해상도 축소 (너비 640px 이상이면 리사이징)
         h, w = image.shape[:2]
+        orig_w, orig_h = w, h                   # 축소 전 원본 해상도
+        self._orig_frame_size = (w, h)          # 축소 전 원본 해상도 기록
         if w > 640:
             scale = 640 / w
             new_w = 640
@@ -618,19 +818,44 @@ class InspectionWorker:
         # JPEG 인코딩 (품질 50 → 대역폭 65% 감소, 시각적 품질은 충분)
         ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 50])
         if not ok:
+            print(f"[Worker:{self.config.line_name}] _push_frame: cv2.imencode failed "
+                  f"(image shape={image.shape}, dtype={image.dtype})")
             return
         jpeg_bytes = buf.tobytes()
 
-        # 리젝트 슬라이딩 윈도우 메타 (프레임과 동기화)
-        if self._rejecter is not None:
+        # 리젝트 바 메타: 모드별 분기
+        collection_mode = getattr(self.config, 'collection_mode', 'auto')
+        if collection_mode == 'continuous':
+            # Continuous: valve delay + valve on time 기반 시각화
+            meta = self._build_valve_bar_meta()
+            # 밸브 ON/OFF: 정밀 타임스탬프 비교 (바 양자화 갭 없음)
+            should_on = self._is_in_valve_window()
+            if self._camera is not None:
+                if should_on and not self._cont_valve_on:
+                    self._camera.set_reject_output(True)
+                    self._cont_valve_on = True
+                    print(f"[Rejecter] CONTINUOUS ON")
+                elif not should_on and self._cont_valve_on:
+                    self._camera.set_reject_output(False)
+                    self._cont_valve_on = False
+                    print(f"[Rejecter] CONTINUOUS OFF")
+        elif self._rejecter is not None:
+            # Trigger/Auto: 프레임 기반 슬라이딩 윈도우 (reject_delay_frames+1 칸)
             window = self._rejecter.window_state
+            win_size = len(window)  # reject_delay_frames + 1
             meta = {
-                "reject_window_size":  self._rejecter.reject_delay_frames,
+                "reject_window_size": win_size,
                 "reject_window_marks": [i for i, v in enumerate(window) if v == 1],
+                "reject_delay_ratio": None,  # 프레임 기반은 delay_ratio 없음
             }
         else:
-            meta = {"reject_window_size": 0, "reject_window_marks": []}
+            meta = {"reject_window_size": 0, "reject_window_marks": [], "reject_delay_ratio": None}
 
+        meta["is_defect"] = is_defect
+        meta["orig_w"] = orig_w
+        meta["orig_h"] = orig_h
+        if defect_meta:
+            meta.update(defect_meta)
         item = (jpeg_bytes, meta)
 
         # 큐가 꽉 찼으면 오래된 프레임 버리기
@@ -643,19 +868,105 @@ class InspectionWorker:
             except Exception:
                 pass
 
+    def _fire_time_based_reject(self, timestamp: float):
+        """Timer 콜백: 지정 시간이 지난 후 Rejecter에 즉시 발사 명령."""
+        with self._pending_rejects_lock:
+            if timestamp in self._pending_rejects:
+                self._pending_rejects.remove(timestamp)
+        self._rejecter.push(is_defect=True)
+
+    def _is_in_valve_window(self) -> bool:
+        """현재 시각이 pending defect 중 하나의 밸브 구간 안에 있는지 확인.
+
+        각 불량 타임스탬프 t에 대해 밸브 구간:
+          [t + pre_valve_delay, t + pre_valve_delay + time_valve_on)
+
+        바 포지션 양자화 없이 정밀 비교하므로 연속 불량 시 갭이 없음.
+        """
+        c = self.config
+        delay = c.pre_valve_delay
+        valve_on = c.time_valve_on
+        now = time.time()
+
+        with self._pending_rejects_lock:
+            for t in self._pending_rejects:
+                elapsed = now - t
+                if delay <= elapsed < delay + valve_on:
+                    return True
+        return False
+
+    def _build_valve_bar_meta(self) -> dict:
+        """valve delay + valve on time 기반 바 메타 생성.
+
+        바 구성: [== delay 구간 (흰색) ==][== on time 구간 (노란색) ==]
+        불량 감지 시 빨간 마크가 왼쪽→오른쪽으로 이동.
+        마크가 노란 영역 도달 = 실제 리젝트 발사와 동기화.
+        """
+        c = self.config
+        delay = c.pre_valve_delay if c else 0
+        valve_on = c.time_valve_on if c else 0
+        total_time = delay + valve_on
+        VIRTUAL_SIZE = 20
+
+        if total_time <= 0:
+            return {"reject_window_size": VIRTUAL_SIZE, "reject_window_marks": [],
+                    "reject_delay_ratio": 0.0}
+
+        delay_ratio = delay / total_time
+
+        now = time.time()
+        marks = []
+        with self._pending_rejects_lock:
+            # 만료된 항목 정리
+            self._pending_rejects = [
+                t for t in self._pending_rejects
+                if now - t < total_time
+            ]
+            for t in self._pending_rejects:
+                progress = (now - t) / total_time  # 0.0 → 1.0
+                pos = min(VIRTUAL_SIZE - 1, int(progress * VIRTUAL_SIZE))
+                marks.append(pos)
+        return {
+            "reject_window_size": VIRTUAL_SIZE,
+            "reject_window_marks": marks,
+            "reject_delay_ratio": round(delay_ratio, 3),
+        }
+
     def manual_reject(self):
-        """수동 리젝트 테스트: 다음 push 시 리젝트 신호 1회 발생."""
+        """수동 리젝트 테스트: 시간 기반이면 딜레이 후 발사, 아니면 즉시 push."""
         if self._rejecter is not None:
-            self._rejecter.push(is_defect=True)
+            collection_mode = getattr(self.config, 'collection_mode', 'auto')
+            if collection_mode == 'continuous':
+                # Continuous 모드: 타임스탬프 기반 (바 표시 + 밸브 ON/OFF)
+                with self._pending_rejects_lock:
+                    self._pending_rejects.append(time.time())
+            elif self._time_based_reject:
+                now = time.time()
+                with self._pending_rejects_lock:
+                    self._pending_rejects.append(now)
+                threading.Timer(
+                    self._reject_delay_sec,
+                    self._fire_time_based_reject,
+                    args=(now,),
+                ).start()
+            else:
+                self._rejecter.push(is_defect=True)
 
     def _cleanup(self):
-        """루프 종료 후 자원 해제."""
+        """루프 종료 후 자원 해제. 리젝트 신호를 확실히 OFF."""
         if self._status != STATUS_ERROR:
             self._status = STATUS_STOPPED
         self._init_stage = ""
         self._init_current = 0
+        # Continuous 모드 상태 초기화
+        self._cont_valve_on = False
+        # 리젝트 OFF: rejecter.reset()과 카메라 직접 OFF 이중 보장
         if self._rejecter is not None:
             self._rejecter.reset()
         if self._camera is not None:
+            try:
+                self._camera.set_reject_output(False)
+            except Exception:
+                pass
             self._camera.close()
         print(f"[Worker:{self.config.line_name}] Worker stopped.")

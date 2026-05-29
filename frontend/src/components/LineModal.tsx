@@ -34,11 +34,12 @@ function Section({ id, title, collapsed, onToggle, children, right }: {
 }
 
 // ── File Browser Component ──────────────────────────────────────────
-function FileBrowser({ extensions, onSelect, onClose, initialPath }: {
+function FileBrowser({ extensions, onSelect, onClose, initialPath, folderOnly }: {
   extensions: string
   onSelect: (path: string) => void
   onClose: () => void
   initialPath?: string
+  folderOnly?: boolean
 }) {
   const [currentDir, setCurrentDir] = useState('')
   const [parentDir, setParentDir] = useState('')
@@ -48,13 +49,13 @@ function FileBrowser({ extensions, onSelect, onClose, initialPath }: {
   const browse = useCallback(async (path: string) => {
     setLoading(true)
     try {
-      const res = await api.browseFiles(path, extensions)
+      const res = await api.browseFiles(path, folderOnly ? '' : extensions)
       setCurrentDir(res.current)
       setParentDir(res.parent)
-      setItems(res.items)
+      setItems(folderOnly ? res.items.filter(i => i.is_dir) : res.items)
     } catch { /* ignore */ }
     setLoading(false)
-  }, [extensions])
+  }, [extensions, folderOnly])
 
   useEffect(() => {
     browse(initialPath || '')
@@ -73,6 +74,15 @@ function FileBrowser({ extensions, onSelect, onClose, initialPath }: {
           <ArrowLeft size={14} />
         </button>
         <span className="text-[10px] text-gray-500 font-mono truncate flex-1" title={currentDir}>{currentDir}</span>
+        {folderOnly && (
+          <button
+            type="button"
+            onClick={() => onSelect(currentDir)}
+            className="px-2 py-0.5 text-[10px] bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors"
+          >
+            Select
+          </button>
+        )}
         <button type="button" onClick={onClose} className="p-1 text-gray-500 hover:text-gray-300">
           <X size={12} />
         </button>
@@ -82,7 +92,7 @@ function FileBrowser({ extensions, onSelect, onClose, initialPath }: {
         {loading ? (
           <div className="text-xs text-gray-500 py-4 text-center">Loading...</div>
         ) : items.length === 0 ? (
-          <div className="text-xs text-gray-600 py-4 text-center">No items found</div>
+          <div className="text-xs text-gray-600 py-4 text-center">{folderOnly ? 'No subfolders' : 'No items found'}</div>
         ) : (
           items.map(item => (
             <button
@@ -140,8 +150,8 @@ export const defaultConfig: InspectionConfig = {
   reject_mode: 'individual' as const,
   time_valve_on: 0.1,
   pre_valve_delay: 0.25,
-  trigger_delay_us: null as null | number,
-  trigger_debounce_us: null as null | number,
+  trigger_delay_sec: null as null | number,
+  trigger_debounce_sec: null as null | number,
   save_root: './data',
   retention_days: 180,
   max_preview: 50,
@@ -150,6 +160,7 @@ export const defaultConfig: InspectionConfig = {
   detector_config: null,
   show_threshold: 0.3,
   data_yaml: './weights/data.yaml',
+  show_defect_gallery: false,
 }
 
 export default function LineModal({
@@ -206,12 +217,13 @@ export default function LineModal({
         reject_delay_frames: cfg.reject_delay_frames, reject_delay_seconds: cfg.reject_delay_seconds ?? null,
         reject_positions: cfg.reject_positions, reject_mode: cfg.reject_mode ?? 'individual',
         time_valve_on: cfg.time_valve_on, pre_valve_delay: cfg.pre_valve_delay,
-        trigger_delay_us: cfg.trigger_delay_us ?? null,
+        trigger_delay_sec: cfg.trigger_delay_sec ?? null,
         save_root: cfg.save_root, retention_days: cfg.retention_days,
         max_preview: cfg.max_preview, save_normal: cfg.save_normal,
         detector_type: cfg.detector_type ?? 'yolo',
         detector_config: cfg.detector_config ?? null,
         show_threshold: cfg.show_threshold ?? 0.3,
+        show_defect_gallery: cfg.show_defect_gallery ?? false,
       },
     }
   })
@@ -290,6 +302,9 @@ export default function LineModal({
         // products 재초기화
         if (config.products && Object.keys(config.products).length > 0) {
           setProducts(config.products)
+          const activeP = config.active_product ?? 'Default'
+          const activeProd = config.products[activeP]
+          if (activeProd) loadProductIntoForm(activeProd)
         } else {
           setProducts({
             Default: {
@@ -299,12 +314,13 @@ export default function LineModal({
               reject_delay_frames: config.reject_delay_frames, reject_delay_seconds: config.reject_delay_seconds ?? null,
               reject_positions: config.reject_positions, reject_mode: config.reject_mode ?? 'individual',
               time_valve_on: config.time_valve_on, pre_valve_delay: config.pre_valve_delay,
-              trigger_delay_us: config.trigger_delay_us ?? null,
+              trigger_delay_sec: config.trigger_delay_sec ?? null,
               save_root: config.save_root, retention_days: config.retention_days,
               max_preview: config.max_preview, save_normal: config.save_normal,
               detector_type: config.detector_type ?? 'yolo',
               detector_config: config.detector_config ?? null,
               show_threshold: config.show_threshold ?? 0.3,
+              show_defect_gallery: config.show_defect_gallery ?? false,
             },
           })
         }
@@ -331,6 +347,7 @@ export default function LineModal({
   const [selStart, setSelStart] = useState<{ x: number; y: number } | null>(null)
   const [selEnd, setSelEnd] = useState<{ x: number; y: number } | null>(null)
   const [capturingFrame, setCapturingFrame] = useState(false)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const imgContainerRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -340,11 +357,30 @@ export default function LineModal({
     if (!cfg.line_name) return
     setCapturingFrame(true)
     try {
-      const url = await api.captureFrame(cfg.line_name)
+      const { url, origW, origH } = await api.captureFrame(cfg.line_name)
       if (cropImageUrl) URL.revokeObjectURL(cropImageUrl)
+      if (origW > 0 && origH > 0) setNaturalSize({ w: origW, h: origH })
       setCropImageUrl(url)
     } catch (e: any) {
       console.error('Failed to capture frame:', e)
+    } finally {
+      setCapturingFrame(false)
+    }
+  }
+
+  const handleSnapshotFrame = async () => {
+    if (!cfg.line_name) return
+    setCapturingFrame(true)
+    setSnapshotError(null)
+    try {
+      const { url, origW, origH } = await api.snapshotFrame(cfg.line_name)
+      if (cropImageUrl) URL.revokeObjectURL(cropImageUrl)
+      if (origW > 0 && origH > 0) setNaturalSize({ w: origW, h: origH })
+      setCropImageUrl(url)
+    } catch (e: any) {
+      const msg = e?.message ?? String(e)
+      setSnapshotError(msg)
+      console.error('Failed to snapshot frame:', e)
     } finally {
       setCapturingFrame(false)
     }
@@ -370,9 +406,10 @@ export default function LineModal({
     detector_config: cfg.detector_config ?? null,
     show_threshold: cfg.show_threshold ?? 0.3,
     data_yaml: cfg.data_yaml ?? './weights/data.yaml',
-    trigger_delay_us: cfg.trigger_delay_us ?? null,
-    trigger_debounce_us: cfg.trigger_debounce_us ?? null,
+    trigger_delay_sec: cfg.trigger_delay_sec ?? null,
+    trigger_debounce_sec: cfg.trigger_debounce_sec ?? null,
     reject_delay_seconds: cfg.reject_delay_seconds ?? null,
+    show_defect_gallery: cfg.show_defect_gallery ?? false,
   })
 
   const loadProductIntoForm = (product: ProductConfig) => {
@@ -383,14 +420,15 @@ export default function LineModal({
       reject_delay_frames: product.reject_delay_frames, reject_delay_seconds: product.reject_delay_seconds ?? null,
       reject_positions: product.reject_positions, reject_mode: product.reject_mode ?? 'individual',
       time_valve_on: product.time_valve_on, pre_valve_delay: product.pre_valve_delay,
-      trigger_delay_us: product.trigger_delay_us ?? null,
-      trigger_debounce_us: product.trigger_debounce_us ?? null,
+      trigger_delay_sec: product.trigger_delay_sec ?? null,
+      trigger_debounce_sec: product.trigger_debounce_sec ?? null,
       save_root: product.save_root, retention_days: product.retention_days,
       max_preview: product.max_preview, save_normal: product.save_normal,
       detector_type: product.detector_type ?? 'yolo',
       detector_config: product.detector_config ?? null,
       show_threshold: product.show_threshold ?? 0.3,
       data_yaml: product.data_yaml ?? './weights/data.yaml',
+      show_defect_gallery: product.show_defect_gallery ?? false,
     }))
     setCropEnabled(product.crop_region !== null)
     setCropVals(product.crop_region ?? [0, 0, 1920, 1080])
@@ -465,15 +503,18 @@ export default function LineModal({
 
   const handleDetectorTypeChange = (type: DetectorType) => {
     if ((cfg.detector_type ?? 'yolo') === type) return
-    const defaults: Record<string, { model_path: string; config: Record<string, unknown> | null; thresholds: [string, number][] }> = {
-      yolo:      { model_path: './weights/best.pt',        config: null,                                                         thresholds: [['defect', 0.70]] },
-      paddleocr: { model_path: '',                         config: { lang: 'en', change_date: '', class_name: 'date_check', use_gpu: true }, thresholds: [] },
-      cnn:       { model_path: './weights/classifier.pth', config: { input_size: [224, 224], class_names: ['ok', 'ng'] },         thresholds: [['ng', 0.50]] },
+    const defaults: Record<string, { model_path: string; config: Record<string, unknown> | null }> = {
+      yolo:      { model_path: './weights/best.pt',        config: null },
+      paddleocr: { model_path: '',                         config: { lang: 'en', change_date: '', class_name: 'date_check', use_gpu: true } },
     }
     const d = defaults[type] ?? defaults.yolo
     setCfg(prev => ({ ...prev, detector_type: type, model_path: d.model_path, detector_config: d.config }))
-    setThresholds(d.thresholds)
-    setSaveThresholds([])
+    if (type === 'paddleocr') {
+      // OCR: YOLO thresholds 제거 (OCR은 패턴 매칭 방식, threshold 불필요)
+      setThresholds([])
+      setSaveThresholds([])
+    }
+    // YOLO: 기존 thresholds 유지 (YAML 새로고침 시에만 변경)
   }
 
   // ── YAML file parsing for class names ─────────────────────────
@@ -481,10 +522,13 @@ export default function LineModal({
     set('data_yaml', yamlPath)
     try {
       const result = await api.parseYaml(yamlPath, cfg.line_name)
-      const classNames = Object.values(result.names)
+      const classNames = Object.values(result.names) as string[]
       if (classNames.length > 0) {
-        setThresholds(classNames.map(name => [name, 0.70]))
-        setSaveThresholds(classNames.map(name => [name, 0.60]))
+        // 기존 threshold 값 유지: YAML의 클래스명으로 키를 갱신하되 기존값 보존
+        const prevMap = Object.fromEntries(thresholds)
+        const prevSaveMap = Object.fromEntries(saveThresholds)
+        setThresholds(classNames.map(name => [name, prevMap[name] ?? 0.70]))
+        setSaveThresholds(classNames.map(name => [name, prevSaveMap[name] ?? 0.60]))
       }
     } catch (e) {
       console.error('Failed to parse YAML:', e)
@@ -520,11 +564,14 @@ export default function LineModal({
 
   // ── Mouse selection handlers ───────────────────────────────────
   const getRelPos = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = imgContainerRef.current?.getBoundingClientRect()
-    if (!rect) return null
+    const el = imgContainerRef.current
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    const x = e.clientX - rect.left - el.clientLeft
+    const y = e.clientY - rect.top - el.clientTop
     return {
-      x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
-      y: Math.max(0, Math.min(rect.height, e.clientY - rect.top)),
+      x: Math.max(0, Math.min(el.clientWidth, x)),
+      y: Math.max(0, Math.min(el.clientHeight, y)),
     }
   }
 
@@ -962,13 +1009,27 @@ export default function LineModal({
                           <Monitor size={16} />
                           Camera is not running
                         </div>
-                        <p className="text-xs text-gray-600">Start the worker to capture from camera, or select an image file.</p>
+                        <button
+                          type="button"
+                          onClick={handleSnapshotFrame}
+                          disabled={capturingFrame}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors"
+                        >
+                          <Camera size={16} />
+                          {capturingFrame ? 'Capturing...' : 'Capture once'}
+                        </button>
+                        {snapshotError && (
+                          <div className="text-xs text-red-400 bg-red-900/30 border border-red-800/50 rounded px-3 py-2 max-w-xs text-center break-words">
+                            {snapshotError}
+                          </div>
+                        )}
+                        <span className="text-xs text-gray-600">or</span>
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
-                          className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded-lg transition-colors"
+                          className="flex items-center gap-2 px-3 py-1.5 text-gray-400 hover:text-white text-xs border border-gray-700 hover:border-gray-500 rounded-lg transition-colors"
                         >
-                          <Upload size={16} />
+                          <Upload size={14} />
                           Browse file
                         </button>
                       </div>
@@ -1001,10 +1062,14 @@ export default function LineModal({
                         draggable={false}
                         onLoad={e => {
                           const img = e.target as HTMLImageElement
-                          setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight })
-                          if (cfg.crop_region === null) {
-                            setCropVals([0, 0, img.naturalWidth, img.naturalHeight])
-                          }
+                          // Captured frames: naturalSize already set to original camera resolution via headers.
+                          // File uploads: naturalSize is null — set from image dimensions.
+                          setNaturalSize(prev => {
+                            const w = prev?.w ?? img.naturalWidth
+                            const h = prev?.h ?? img.naturalHeight
+                            if (cfg.crop_region === null) setCropVals([0, 0, w, h])
+                            return prev ?? { w: img.naturalWidth, h: img.naturalHeight }
+                          })
                         }}
                       />
 
@@ -1098,6 +1163,25 @@ export default function LineModal({
             ) : (
               <p className="text-xs text-gray-600">Disabled — full frame is used.</p>
             )}
+
+            {/* Defect Gallery Toggle */}
+            <div className="flex items-center justify-between mt-3">
+              <div>
+                <span className="text-xs text-gray-400">Defect Gallery (Dashboard)</span>
+                <p className="text-xs text-gray-600 mt-0.5">Show recent defect images below camera feed</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => set('show_defect_gallery', !(cfg.show_defect_gallery ?? false))}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                  (cfg.show_defect_gallery ?? false) ? 'bg-blue-600' : 'bg-gray-700'
+                }`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                  (cfg.show_defect_gallery ?? false) ? 'translate-x-5' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
             </div>
           </Section>
 
@@ -1110,12 +1194,11 @@ export default function LineModal({
               {/* Detector Type */}
               <div>
                 <span className="text-xs text-gray-400 mb-2 block">Detector Type</span>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   {([
-                    { value: 'yolo', title: 'YOLO', desc: 'Object detection' },
-                    { value: 'paddleocr', title: 'PaddleOCR', desc: 'Text recognition' },
-                    { value: 'cnn', title: 'CNN', desc: 'Image classification' },
-                  ] as const).map(({ value, title, desc }) => {
+                    { value: 'yolo' as DetectorType, title: 'YOLO', desc: 'Object detection' },
+                    { value: 'paddleocr' as DetectorType, title: 'PaddleOCR', desc: 'Text recognition' },
+                  ]).map(({ value, title, desc }) => {
                     const active = (cfg.detector_type ?? 'yolo') === value
                     return (
                       <button
@@ -1137,46 +1220,43 @@ export default function LineModal({
                   })}
                 </div>
               </div>
-              {/* Weights / Model Path with Browse */}
-              <div className="relative">
-                <span className="text-xs text-gray-400 mb-1 block">
-                  {(cfg.detector_type ?? 'yolo') === 'paddleocr' ? 'Model Directory' :
-                   (cfg.detector_type ?? 'yolo') === 'cnn' ? 'Model File Path' :
-                   'Weights File Path'}
-                </span>
-                <div className="flex gap-1">
-                  <input
-                    value={cfg.model_path}
-                    onChange={e => set('model_path', e.target.value)}
-                    placeholder={
-                      (cfg.detector_type ?? 'yolo') === 'paddleocr' ? '(leave empty for default)' :
-                      (cfg.detector_type ?? 'yolo') === 'cnn' ? './weights/classifier.pth' :
-                      './weights/best.pt'
-                    }
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setFileBrowser(fileBrowser?.field === 'model' ? null : {
-                      field: 'model',
-                      extensions: (cfg.detector_type ?? 'yolo') === 'cnn' ? '.pth,.pt' : '.pt',
-                    })}
-                    className={`px-2 rounded-lg border text-xs transition-colors ${
-                      fileBrowser?.field === 'model' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:border-gray-500'
-                    }`}
-                    title="Browse files"
-                  >
-                    <FolderOpen size={14} />
-                  </button>
+              {/* Weights / Model Path with Browse — OCR에서는 숨김 */}
+              {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
+                <div className="relative">
+                  <span className="text-xs text-gray-400 mb-1 block">Weights File Path</span>
+                  <div className="flex gap-1">
+                    <input
+                      value={cfg.model_path}
+                      onChange={e => set('model_path', e.target.value)}
+                      placeholder={
+                        (cfg.detector_type ?? 'yolo') === 'cnn' ? './weights/classifier.pth' :
+                        './weights/best.pt'
+                      }
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFileBrowser(fileBrowser?.field === 'model' ? null : {
+                        field: 'model',
+                        extensions: '.pt',
+                      })}
+                      className={`px-2 rounded-lg border text-xs transition-colors ${
+                        fileBrowser?.field === 'model' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:border-gray-500'
+                      }`}
+                      title="Browse files"
+                    >
+                      <FolderOpen size={14} />
+                    </button>
+                  </div>
+                  {fileBrowser?.field === 'model' && (
+                    <FileBrowser
+                      extensions={fileBrowser.extensions}
+                      onSelect={(path) => { set('model_path', path); setFileBrowser(null) }}
+                      onClose={() => setFileBrowser(null)}
+                    />
+                  )}
                 </div>
-                {fileBrowser?.field === 'model' && (
-                  <FileBrowser
-                    extensions={fileBrowser.extensions}
-                    onSelect={(path) => { set('model_path', path); setFileBrowser(null) }}
-                    onClose={() => setFileBrowser(null)}
-                  />
-                )}
-              </div>
+              )}
 
               {/* YAML Data File (for YOLO class names) */}
               {(cfg.detector_type ?? 'yolo') === 'yolo' && (
@@ -1262,7 +1342,7 @@ export default function LineModal({
                         {
                           label: '🎯 Accurate',
                           desc: 'Best quality',
-                          config: { use_gpu: true, use_angle_cls: true, det_limit_side_len: 1280, rec_batch_num: 3, use_dilation: true }
+                          config: { use_gpu: true, use_angle_cls: true, det_limit_side_len: 1280, rec_batch_num: 3 }
                         }
                       ].map((preset) => {
                         const isActive =
@@ -1377,55 +1457,30 @@ export default function LineModal({
                         <span className="text-xs text-gray-400">Detect Rotated Text</span>
                       </label>
 
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={cfg.detector_config?.use_dilation ?? false}
-                          onChange={e => setDetectorConfig('use_dilation', e.target.checked)}
-                          className="w-4 h-4 bg-gray-700 border border-gray-600 rounded"
-                        />
-                        <span className="text-xs text-gray-400">Dilate Detection Regions</span>
+                      <label className="block">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs text-blue-400 font-medium">Min Confidence for Normal</span>
+                          <span className="text-xs font-mono text-blue-300 font-bold">
+                            {Math.round((cfg.detector_config?.min_confidence ?? 0) * 100)}%
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={0}
+                            max={99}
+                            step={1}
+                            value={Math.round((cfg.detector_config?.min_confidence ?? 0) * 100)}
+                            onChange={e => setDetectorConfig('min_confidence', parseInt(e.target.value) / 100)}
+                            className="flex-1 accent-blue-500"
+                          />
+                        </div>
+                        <p className="text-[10px] text-gray-600 mt-1">
+                          Only OCR readings at or above this confidence count toward normal detection.
+                        </p>
                       </label>
-                    </div>
-                  </div>
-                </div>
-              )}
 
-              {/* CNN Configuration */}
-              {(cfg.detector_type ?? 'yolo') === 'cnn' && (
-                <div className="space-y-3 p-3 rounded-lg bg-gray-800/30 border border-gray-700/50">
-                  <span className="text-xs text-gray-500 font-medium">CNN Classifier Settings</span>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="block">
-                      <span className="text-xs text-gray-400 mb-1 block">Input Size</span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={1}
-                          value={cfg.detector_config?.input_size?.[0] ?? 224}
-                          onChange={e => setDetectorConfig('input_size', [+e.target.value, cfg.detector_config?.input_size?.[1] ?? 224])}
-                          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                        />
-                        <span className="text-gray-500 text-xs shrink-0">×</span>
-                        <input
-                          type="number"
-                          min={1}
-                          value={cfg.detector_config?.input_size?.[1] ?? 224}
-                          onChange={e => setDetectorConfig('input_size', [cfg.detector_config?.input_size?.[0] ?? 224, +e.target.value])}
-                          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                        />
-                      </div>
-                    </label>
-                    <label className="block">
-                      <span className="text-xs text-gray-400 mb-1 block">Class Names</span>
-                      <input
-                        value={(cfg.detector_config?.class_names ?? ['ok', 'ng']).join(', ')}
-                        onChange={e => setDetectorConfig('class_names', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
-                        placeholder="ok, ng"
-                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                      />
-                      <p className="text-xs text-gray-600 mt-1">Comma-separated class labels</p>
-                    </label>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1485,56 +1540,58 @@ export default function LineModal({
                 </div>
               )}
 
-              {/* Save Thresholds (Borderline) */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-gray-400">Save Thresholds</span>
-                  <button
-                    onClick={() => setSaveThresholds(prev => [...prev, ['', 0.30]])}
-                    className="text-xs text-blue-400 hover:text-blue-300"
-                  >
-                    + Add
-                  </button>
+              {/* Save Thresholds (Borderline) — OCR에서는 숨김 (OCR은 패턴 매칭 방식) */}
+              {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-gray-400">Save Thresholds</span>
+                    <button
+                      onClick={() => setSaveThresholds(prev => [...prev, ['', 0.30]])}
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      + Add
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-600 mb-2">
+                    Saves borderline images below reject threshold but above this value.
+                  </p>
+                  <div className="space-y-2">
+                    {saveThresholds.map(([cls, thr], i) => (
+                      <div key={i} className="flex gap-2 items-center">
+                        <input
+                          value={cls}
+                          onChange={e => {
+                            const next = [...saveThresholds]
+                            next[i] = [e.target.value, thr]
+                            setSaveThresholds(next)
+                          }}
+                          placeholder="class name"
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={thr}
+                          onChange={e => {
+                            const next = [...saveThresholds]
+                            next[i] = [cls, parseFloat(e.target.value)]
+                            setSaveThresholds(next)
+                          }}
+                          className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                        />
+                        <button
+                          onClick={() => setSaveThresholds(prev => prev.filter((_, j) => j !== i))}
+                          className="text-gray-600 hover:text-red-400"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <p className="text-xs text-gray-600 mb-2">
-                  Saves borderline images below reject threshold but above this value.
-                </p>
-                <div className="space-y-2">
-                  {saveThresholds.map(([cls, thr], i) => (
-                    <div key={i} className="flex gap-2 items-center">
-                      <input
-                        value={cls}
-                        onChange={e => {
-                          const next = [...saveThresholds]
-                          next[i] = [e.target.value, thr]
-                          setSaveThresholds(next)
-                        }}
-                        placeholder="class name"
-                        className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                      />
-                      <input
-                        type="number"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={thr}
-                        onChange={e => {
-                          const next = [...saveThresholds]
-                          next[i] = [cls, parseFloat(e.target.value)]
-                          setSaveThresholds(next)
-                        }}
-                        className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                      />
-                      <button
-                        onClick={() => setSaveThresholds(prev => prev.filter((_, j) => j !== i))}
-                        className="text-gray-600 hover:text-red-400"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              )}
 
               {/* Show Threshold (Dashboard display threshold) */}
               {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
@@ -1557,6 +1614,7 @@ export default function LineModal({
                   </p>
                 </div>
               )}
+
             </div>
           </Section>
 
@@ -1567,88 +1625,87 @@ export default function LineModal({
           <Section id="reject" title="Reject Settings" collapsed={collapsed} onToggle={toggleSection}>
             <div className="grid grid-cols-2 gap-3">
 
-              {/* ── 딜레이 (카메라 모드에 따라 달라짐) ── */}
-              {(cfg.collection_mode ?? 'auto') === 'continuous' ? (
-                /* 연속 모드: 초 단위 딜레이 */
-                <label className="block">
-                  <span className="text-xs text-gray-400 mb-1 block">Reject Delay (sec)</span>
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={0.01}
-                    value={cfg.reject_delay_seconds ?? ''}
-                    placeholder="e.g. 1.0"
-                    onChange={e => set('reject_delay_seconds', e.target.value ? +e.target.value : null)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 placeholder-gray-600"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">FPS measured at startup → auto-converts to frames</p>
-                </label>
-              ) : (
-                /* 트리거 / auto 모드: 프레임 단위 딜레이 */
-                <label className="block">
-                  <span className="text-xs text-gray-400 mb-1 block">Delay Frames</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={cfg.reject_delay_frames}
-                    onChange={e => set('reject_delay_frames', +e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                  />
+              {/* ── Trigger 모드 전용: Delay Frames, Reject Positions ── */}
+              {(cfg.collection_mode ?? 'auto') !== 'continuous' && (
+                <>
+                  <label className="block">
+                    <span className="text-xs text-gray-400 mb-1 block">Delay Frames</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={cfg.reject_delay_frames}
+                      onChange={e => set('reject_delay_frames', +e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-600 mt-1">Sensor signals before reject fires</p>
+                  </label>
+
+                  <label className="block">
+                    <span className="text-xs text-gray-400 mb-1 block">Reject Positions</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={cfg.reject_positions}
+                      onChange={e => set('reject_positions', +e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-600 mt-1">Number of reject signals to send</p>
+                  </label>
+                </>
+              )}
+
+              {/* Continuous 모드: reject_delay_seconds 제거 — valve delay(pre_valve_delay)로 통일 */}
+
+              {/* ── Reject Mode (individual 모드에서만 표시; continuous collection에서는 숨김) ── */}
+              {(cfg.collection_mode ?? 'auto') !== 'continuous' && (
+                <label className="block col-span-2">
+                  <span className="text-xs text-gray-400 mb-1 block">Reject Mode</span>
+                  <div className="flex gap-1">
+                    {(['individual', 'continuous'] as const).map(m => {
+                      const active = (cfg.reject_mode ?? 'individual') === m
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => set('reject_mode', m)}
+                          className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                            active
+                              ? 'bg-blue-600 border-blue-600 text-white'
+                              : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'
+                          }`}
+                        >
+                          {m === 'individual' ? 'Individual (separate shots)' : 'Continuous (merge bursts)'}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-xs text-gray-600 mt-1">
+                    {(cfg.reject_mode ?? 'individual') === 'individual'
+                      ? `Fires ${cfg.reject_positions} separate shot${cfg.reject_positions > 1 ? 's' : ''}, each ${cfg.time_valve_on}s — valve delay applies to each`
+                      : cfg.reject_positions > 1
+                        ? `Valve ON at pos -${cfg.reject_positions} (after valve delay), OFF at pos -1 (after valve-on time)`
+                        : `Single position: valve delay → ON → valve-on time → OFF`}
+                  </p>
                 </label>
               )}
 
-              {/* ── Reject Positions ── */}
+              {/* ── Valve Delay (left, 공통) ── */}
               <label className="block">
-                <span className="text-xs text-gray-400 mb-1 block">Reject Positions</span>
+                <span className="text-xs text-gray-400 mb-1 block">Valve Delay (sec)</span>
                 <input
                   type="number"
-                  min={1}
-                  value={cfg.reject_positions}
-                  onChange={e => set('reject_positions', +e.target.value)}
+                  min={0}
+                  step={0.01}
+                  value={cfg.pre_valve_delay}
+                  onChange={e => set('pre_valve_delay', +e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-600 mt-1">Trailing window slots to check</p>
+                <p className="text-xs text-gray-600 mt-1">Delay before reject signal fires</p>
               </label>
 
-              {/* ── Reject Mode ── */}
-              <label className="block col-span-2">
-                <span className="text-xs text-gray-400 mb-1 block">Reject Mode</span>
-                <div className="flex gap-1">
-                  {(['individual', 'continuous'] as const).map(m => {
-                    const active = (cfg.reject_mode ?? 'individual') === m
-                    return (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => set('reject_mode', m)}
-                        className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                          active
-                            ? 'bg-blue-600 border-blue-600 text-white'
-                            : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'
-                        }`}
-                      >
-                        {m === 'individual' ? 'Individual (×N shots)' : 'Continuous (1 long burst)'}
-                      </button>
-                    )
-                  })}
-                </div>
-                <p className="text-xs text-gray-600 mt-1">
-                  {(cfg.reject_mode ?? 'individual') === 'individual'
-                    ? `Fires ${cfg.reject_positions} separate shot${cfg.reject_positions > 1 ? 's' : ''}, each ${cfg.time_valve_on}s — pre-valve delay applies to each`
-                    : cfg.reject_positions > 1
-                      ? `Valve ON at pos -${cfg.reject_positions} (after pre-valve delay), OFF at pos -1 (after valve-on time)`
-                      : `Single position: pre-valve delay → ON → valve-on time → OFF`}
-                </p>
-              </label>
-
-              {/* ── Valve On Time ── */}
+              {/* ── Valve On Time (right, 공통) ── */}
               <label className="block">
-                <span className="text-xs text-gray-400 mb-1 block">
-                  Valve On Time (sec)
-                  {(cfg.reject_mode ?? 'individual') === 'continuous' && cfg.reject_positions > 1
-                    ? ' — applied at last position'
-                    : ''}
-                </span>
+                <span className="text-xs text-gray-400 mb-1 block">Valve On Time (sec)</span>
                 <input
                   type="number"
                   min={0.01}
@@ -1659,98 +1716,43 @@ export default function LineModal({
                 />
               </label>
 
-              {/* ── Pre-Valve Delay ── */}
-              <label className="block">
-                <span className="text-xs text-gray-400 mb-1 block">
-                  Pre-Valve Delay (sec)
-                  {(cfg.reject_mode ?? 'individual') === 'continuous' && cfg.reject_positions > 1
-                    ? ' — applied at first position'
-                    : ''}
-                </span>
-                <input
-                  type="number"
-                  step={0.01}
-                  value={cfg.pre_valve_delay}
-                  onChange={e => set('pre_valve_delay', +e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-              </label>
+              {/* ── Trigger 모드 전용: Trigger Delay, Trigger Debounce ── */}
+              {(cfg.collection_mode ?? 'auto') !== 'continuous' && (
+                <>
+                  <label className="block">
+                    <span className="text-xs text-gray-400 mb-1 block">Trigger Delay (sec)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.001}
+                      value={cfg.trigger_delay_sec ?? ''}
+                      placeholder="e.g. 0.005"
+                      onChange={e => set('trigger_delay_sec', e.target.value ? +e.target.value : null)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 placeholder-gray-600"
+                    />
+                    <p className="text-xs text-gray-600 mt-1">Camera delay after sensor trigger fires</p>
+                  </label>
 
-              {/* ── 트리거 모드 전용: 센서→카메라 딜레이 ── */}
-              {(cfg.collection_mode ?? 'auto') === 'trigger' && (
-                <label className="block col-span-2">
-                  <span className="text-xs text-gray-400 mb-1 block">Trigger Delay (µs)</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={100}
-                    value={cfg.trigger_delay_us ?? ''}
-                    placeholder="e.g. 5000 (= 5ms)"
-                    onChange={e => set('trigger_delay_us', e.target.value ? +e.target.value : null)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 placeholder-gray-600"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">
-                    Camera hardware delay after sensor trigger fires (TriggerDelayAbs). 1,000 µs = 1 ms.
-                  </p>
-                </label>
-              )}
-
-              {/* ── 트리거 노이즈 제거 ── */}
-              {(cfg.collection_mode ?? 'auto') === 'trigger' && (
-                <label className="block col-span-2">
-                  <span className="text-xs text-gray-400 mb-1 block">Trigger Debounce (µs)</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={100}
-                    value={cfg.trigger_debounce_us ?? ''}
-                    placeholder="e.g. 500 (= 0.5ms)"
-                    onChange={e => set('trigger_debounce_us', e.target.value ? +e.target.value : null)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 placeholder-gray-600"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">
-                    Ignore trigger pulses shorter than this duration (LineDebouncerHighTime). Filters out electrical noise.
-                  </p>
-                </label>
+                  <label className="block">
+                    <span className="text-xs text-gray-400 mb-1 block">Trigger Debounce (sec)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.001}
+                      value={cfg.trigger_debounce_sec ?? ''}
+                      placeholder="e.g. 0.0005"
+                      onChange={e => set('trigger_debounce_sec', e.target.value ? +e.target.value : null)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 placeholder-gray-600"
+                    />
+                    <p className="text-xs text-gray-600 mt-1">Ignore trigger pulses shorter than this duration</p>
+                  </label>
+                </>
               )}
 
             </div>
           </Section>
 
-          <div className="border-t border-gray-700/40" />
-
-          {/* Data Storage */}
-          <Section id="storage" title="Data Storage" collapsed={collapsed} onToggle={toggleSection}>
-            <div className="space-y-3">
-              <label className="block">
-                <span className="text-xs text-gray-400 mb-1 block">Save Folder</span>
-                <input
-                  type="text"
-                  value={cfg.save_root}
-                  onChange={e => set('save_root', e.target.value)}
-                  placeholder="e.g. ./data or /mnt/nas/product-a"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 placeholder-gray-600"
-                />
-                <p className="text-xs text-gray-600 mt-1">
-                  Root directory for saving defect images. Can be absolute or relative path.
-                </p>
-              </label>
-              <label className="block">
-                <span className="text-xs text-gray-400 mb-1 block">Retention Days</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={cfg.retention_days}
-                  onChange={e => set('retention_days', +e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-                <p className="text-xs text-gray-600 mt-1">
-                  Days to keep data. 0 = unlimited.
-                </p>
-              </label>
-            </div>
-          </Section>
+          {/* Data Storage removed — now in Admin Settings */}
 
         </div>
 

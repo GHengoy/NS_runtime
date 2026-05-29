@@ -212,7 +212,9 @@ def process_frame(frame, cropped, *, detector, rejecter, data_manager, config):
     # ── 리젝트 신호 ──────────────────────────────────────────────────────────
     if rejecter is not None:
         # 기본 모드: 리젝트 신호 바로 전송 (불량이면 신호 ON)
-        rejecter.push(is_defect=is_defect)
+        collection_mode = getattr(config, 'collection_mode', 'auto')
+        if collection_mode != 'continuous':
+            rejecter.push(is_defect=is_defect)
 
         # [참고용 — 미사용] 감지 위치(y좌표) 기반 insert_position 계산 예시
         # 필요 시 위 한 줄을 주석 처리하고 아래 블록을 활성화하세요.
@@ -226,15 +228,38 @@ def process_frame(frame, cropped, *, detector, rejecter, data_manager, config):
         # rejecter.push(is_defect=is_defect, insert_position=insert_position)
 
     # ── 저장 ─────────────────────────────────────────────────────────────────
-    if is_defect:
-        data_manager.save_defect(
-            image=frame, annotated=annotated,
-            detections=detections, line_name=config.line_name,
-        )
+    if config.save_thresholds:
+        save_thr = config.save_thresholds
+        save_dets = [
+            d for d in detections
+            if d.label in save_thr and d.confidence >= save_thr[d.label]
+        ]
+        if save_dets:
+            if is_defect:
+                data_manager.save_defect(
+                    image=cropped, annotated=annotated,
+                    detections=detections, line_name=config.line_name,
+                )
+            else:
+                data_manager.save_borderline(
+                    image=cropped, annotated=annotated,
+                    detections=save_dets, line_name=config.line_name,
+                )
+        elif is_defect:
+            data_manager.save_defect(
+                image=cropped, annotated=annotated,
+                detections=detections, line_name=config.line_name,
+            )
+        else:
+            type(data_manager).save_normal(data_manager, cropped, config.line_name)
     else:
-        # DataManager.__init__ 이 self.save_normal(bool)로 속성을 덮어쓰므로
-        # 클래스 메서드를 직접 호출해 우회
-        type(data_manager).save_normal(data_manager, frame, config.line_name)
+        if is_defect:
+            data_manager.save_defect(
+                image=cropped, annotated=annotated,
+                detections=detections, line_name=config.line_name,
+            )
+        else:
+            type(data_manager).save_normal(data_manager, cropped, config.line_name)
 
     return annotated, is_defect
 

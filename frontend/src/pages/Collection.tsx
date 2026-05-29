@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Camera, Play, Square, ImageDown, Zap, Radio } from 'lucide-react'
+import { Camera, Play, Square, ImageDown, Zap, Radio, FolderOpen } from 'lucide-react'
 import { CollectionLineInfo, CollectionStats, CollectionMode } from '../types'
 import { WS_BASE } from '../config'
 import * as api from '../api'
+import DirectoryPickerModal from '../components/DirectoryPickerModal'
 
 export default function Collection() {
   const [lines, setLines] = useState<CollectionLineInfo[]>([])
@@ -15,6 +16,12 @@ export default function Collection() {
   const [error, setError] = useState('')
   const [spaceHeld, setSpaceHeld] = useState(false)
   const [reconnectTick, setReconnectTick] = useState(0)
+  const [saveDir, setSaveDir] = useState('')
+  const [actualSaveDir, setActualSaveDir] = useState('')
+  const [showDirPicker, setShowDirPicker] = useState(false)
+  const savedPathsRef = useRef<Record<string, string>>(
+    JSON.parse(localStorage.getItem('collection_save_dirs') ?? '{}')
+  )
 
   const wsRef = useRef<WebSocket | null>(null)
   const blobUrlRef = useRef<string | null>(null)
@@ -25,6 +32,29 @@ export default function Collection() {
   // Keep refs in sync
   useEffect(() => { sessionActiveRef.current = sessionActive }, [sessionActive])
   useEffect(() => { selectedLineRef.current = selectedLine }, [selectedLine])
+
+  // Restore saved path when line changes
+  useEffect(() => {
+    if (selectedLine) setSaveDir(savedPathsRef.current[selectedLine] ?? '')
+  }, [selectedLine])
+
+  const handleSaveDirChange = (path: string) => {
+    setSaveDir(path)
+    if (selectedLine) {
+      const updated = { ...savedPathsRef.current, [selectedLine]: path }
+      savedPathsRef.current = updated
+      localStorage.setItem('collection_save_dirs', JSON.stringify(updated))
+    }
+  }
+
+  const handleSaveDirClear = () => {
+    setSaveDir('')
+    if (selectedLine) {
+      const { [selectedLine]: _, ...rest } = savedPathsRef.current
+      savedPathsRef.current = rest
+      localStorage.setItem('collection_save_dirs', JSON.stringify(rest))
+    }
+  }
 
   // ── Load available lines ──────────────────────────────────────
 
@@ -139,8 +169,9 @@ export default function Collection() {
     setLoading(true)
     setError('')
     try {
-      const result = await api.startCollection(selectedLine)
+      const result = await api.startCollection(selectedLine, saveDir.trim() || undefined)
       setDetectedMode(result.detected_mode)
+      setActualSaveDir(result.save_dir)
       setSessionActive(true)
       setStats(null)
     } catch (e: any) {
@@ -171,6 +202,14 @@ export default function Collection() {
   const canStart = selectedLine && !sessionActive && !loading && selectedLineInfo && !selectedLineInfo.worker_running
 
   return (
+    <>
+    {showDirPicker && (
+      <DirectoryPickerModal
+        initialPath={saveDir || undefined}
+        onSelect={handleSaveDirChange}
+        onClose={() => setShowDirPicker(false)}
+      />
+    )}
     <div className="h-full flex flex-col p-6 gap-5 overflow-auto" style={{ color: '#e4e4e7' }}>
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -187,17 +226,17 @@ export default function Collection() {
 
       {/* Controls */}
       <div
-        className="border border-gray-700/50 rounded-xl p-4 flex flex-wrap items-center gap-4"
+        className="border border-gray-700/50 rounded-xl p-4 flex flex-col gap-3"
         style={{ backgroundColor: 'rgba(39,39,42,0.6)' }}
       >
-        {/* Line selector */}
-        <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+        {/* Row 1: Line selector + Start/Stop */}
+        <div className="flex items-center gap-3">
           <Camera size={14} className="text-gray-500 shrink-0" />
           <select
             value={selectedLine}
             onChange={e => setSelectedLine(e.target.value)}
             disabled={sessionActive}
-            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white
+            className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white
                        focus:outline-none focus:border-blue-500 disabled:opacity-50"
           >
             <option value="">Select a line...</option>
@@ -210,32 +249,58 @@ export default function Collection() {
               </option>
             ))}
           </select>
+
+          {/* Start / Stop */}
+          {!sessionActive ? (
+            <button
+              onClick={handleStart}
+              disabled={!canStart || loading}
+              className="shrink-0 flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium
+                         bg-green-600 hover:bg-green-500 text-white
+                         disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Play size={14} />
+              {loading ? 'Starting...' : 'Start'}
+            </button>
+          ) : (
+            <button
+              onClick={handleStop}
+              disabled={loading}
+              className="shrink-0 flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium
+                         bg-red-600 hover:bg-red-500 text-white
+                         disabled:opacity-40 transition-colors"
+            >
+              <Square size={14} />
+              {loading ? 'Stopping...' : 'Stop'}
+            </button>
+          )}
         </div>
 
-        {/* Start / Stop */}
-        {!sessionActive ? (
+        {/* Row 2: Save path */}
+        <div className="flex items-center gap-2">
+          <FolderOpen size={14} className="text-gray-500 shrink-0" />
           <button
-            onClick={handleStart}
-            disabled={!canStart || loading}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium
-                       bg-green-600 hover:bg-green-500 text-white
-                       disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            onClick={() => setShowDirPicker(true)}
+            disabled={sessionActive}
+            className="flex-1 min-w-0 flex items-center bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-left
+                       hover:border-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors overflow-hidden"
           >
-            <Play size={14} />
-            {loading ? 'Starting...' : 'Start'}
+            {saveDir ? (
+              <span className="text-white font-mono truncate">{saveDir}</span>
+            ) : (
+              <span className="text-gray-600 truncate">Save path (default: only_image/{'{line}'})</span>
+            )}
           </button>
-        ) : (
-          <button
-            onClick={handleStop}
-            disabled={loading}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium
-                       bg-red-600 hover:bg-red-500 text-white
-                       disabled:opacity-40 transition-colors"
-          >
-            <Square size={14} />
-            {loading ? 'Stopping...' : 'Stop'}
-          </button>
-        )}
+          {saveDir && !sessionActive && (
+            <button
+              onClick={handleSaveDirClear}
+              className="shrink-0 text-gray-600 hover:text-gray-400 transition-colors text-xs w-6 h-6 flex items-center justify-center"
+              title="Clear"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Warning for worker running */}
@@ -374,11 +439,12 @@ export default function Collection() {
           <div className="border border-green-500/20 bg-green-500/5 rounded-xl p-4 text-center">
             <span className="text-sm text-green-400">
               Collection complete. <span className="font-bold">{stats.saved_count}</span> images saved to{' '}
-              <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded">only_image/{selectedLine}/</code>
+              <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded">{actualSaveDir || `only_image/${selectedLine}`}</code>
             </span>
           </div>
         )}
       </div>
     </div>
+    </>
   )
 }

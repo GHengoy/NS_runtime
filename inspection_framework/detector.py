@@ -57,6 +57,7 @@ class DetectionResult:
     bbox_xyxy: List[int]
     is_defect: bool = True
     class_threshold: float = 0.5
+    recognized_text: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────
