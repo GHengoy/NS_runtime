@@ -67,10 +67,17 @@ from backend.history_db import HistoryDB
 from backend.storage import S3SyncWorker
 
 class _WsConnectionFilter(logging.Filter):
-    _skip = frozenset({'connection open', 'connection closed'})
+    _skip_exact = frozenset({'connection open', 'connection closed'})
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.getMessage() not in self._skip
+        if record.levelno > logging.INFO:
+            return True
+        msg = record.getMessage()
+        if msg in self._skip_exact:
+            return False
+        if 'WebSocket' in msg and any(k in msg for k in ('[accepted]', '[disconnected]', 'connected', 'disconnected')):
+            return False
+        return True
 
 
 logging.getLogger("uvicorn.error").addFilter(_WsConnectionFilter())
@@ -524,6 +531,12 @@ def _load_registry():
 
 def _save_line(name: str):
     """특정 라인의 설정을 해당 워커 폴더의 config.json 에 저장합니다."""
+    # 폴더명(레지스트리 키)으로 먼저 조회, 없으면 line_name으로 폴백
+    if name not in _registry:
+        name = next(
+            (k for k, v in _registry.items() if v["config"].get("line_name") == name),
+            name,
+        )
     entry = _registry.get(name)
     if entry is None:
         return
@@ -555,6 +568,7 @@ def _save_line(name: str):
             except OSError:
                 pass
         print(f'[Config] {name} 저장 실패: {e}')
+        raise
 
 
 def _create_run_local_script(folder_path: str, line_name: str, folder_name: str):
@@ -815,6 +829,8 @@ def update_line(name: str, body: LineConfig):
     new_config = body.model_dump()
     # line_name은 항상 폴더명(= name)으로 고정 — 사용자가 바꿔도 무시
     new_config["line_name"] = name
+    # enabled는 /enable, /disable 전용 — PUT 바디 값으로 덮어쓰지 않음
+    new_config["enabled"] = entry["config"].get("enabled", True)
     # products가 없으면 구버전 호환 마이그레이션
     if not (new_config.get("products") and new_config.get("active_product")):
         _migrate_config(new_config)
@@ -926,7 +942,11 @@ def enable_line(name: str):
     """라인을 활성화합니다. 대시보드에 표시되고 Start/Stop 가능 상태가 됩니다."""
     entry = _get_entry(name)
     entry["config"]["enabled"] = True
-    _save_line(name)
+    try:
+        _save_line(name)
+    except Exception as e:
+        entry["config"]["enabled"] = False  # 메모리 롤백
+        raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
     return {"enabled": True}
 
 
@@ -941,7 +961,11 @@ def disable_line(name: str):
         w.join(timeout=5.0)
     # enabled 필드만 False로 설정
     entry["config"]["enabled"] = False
-    _save_line(name)
+    try:
+        _save_line(name)
+    except Exception as e:
+        entry["config"]["enabled"] = True  # 메모리 롤백
+        raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
     return {"enabled": False}
 
 
