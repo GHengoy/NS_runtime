@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NS Runtime — User Manual</title>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.65;
+    color: #1a1a2e;
+    background: #fff;
+  }
+
+  /* ── Page Layout ── */
+  .page {
+    width: 210mm;
+    margin: 0 auto;
+    padding: 18mm 20mm;
+  }
+
+  @media print {
+    body { background: #fff; }
+    .page { margin: 0; padding: 15mm 18mm; }
+    .page-break { page-break-before: always; }
+    h1.part { page-break-before: always; }
+    .no-break { page-break-inside: avoid; }
+  }
+
+  /* ── Cover ── */
+  .cover {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    background: linear-gradient(145deg, #0a1628 0%, #1a2e50 60%, #0d3b6e 100%);
+    color: #fff;
+    border-radius: 4px;
+    padding: 60px 40px;
+  }
+
+  .cover .logo-bar {
+    font-size: 13pt;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: #7fb3f5;
+    margin-bottom: 32px;
+    font-weight: 400;
+  }
+
+  .cover h1 {
+    font-size: 34pt;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 12px;
+    color: #ffffff;
+  }
+
+  .cover .subtitle {
+    font-size: 16pt;
+    color: #a8c8f8;
+    margin-bottom: 48px;
+    font-weight: 300;
+  }
+
+  .cover .divider {
+    width: 80px;
+    height: 3px;
+    background: #4a9eff;
+    margin: 0 auto 40px;
+    border-radius: 2px;
+  }
+
+  .cover .meta {
+    font-size: 10pt;
+    color: #7fb3f5;
+    line-height: 2;
+  }
+
+  .cover .badge {
+    display: inline-block;
+    background: rgba(74, 158, 255, 0.2);
+    border: 1px solid rgba(74, 158, 255, 0.4);
+    color: #7fb3f5;
+    font-size: 9pt;
+    padding: 4px 14px;
+    border-radius: 20px;
+    margin-top: 28px;
+    letter-spacing: 2px;
+  }
+
+  /* ── TOC ── */
+  .toc-page { padding-top: 40px; }
+
+  .toc-title {
+    font-size: 18pt;
+    font-weight: 700;
+    color: #0d3b6e;
+    margin-bottom: 28px;
+    padding-bottom: 10px;
+    border-bottom: 3px solid #4a9eff;
+  }
+
+  .toc-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 5px 0;
+    border-bottom: 1px dotted #ddd;
+    font-size: 10.5pt;
+  }
+
+  .toc-item.toc-h2 { padding-left: 18px; font-size: 10pt; color: #444; }
+  .toc-item.toc-h1 { font-weight: 600; color: #0d3b6e; }
+
+  .toc-num { color: #777; font-size: 9.5pt; }
+
+  /* ── Headings ── */
+  h1.part {
+    font-size: 22pt;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(90deg, #0d3b6e, #1a5fa8);
+    padding: 18px 24px;
+    border-radius: 6px;
+    margin: 32px 0 24px;
+  }
+
+  h2 {
+    font-size: 14pt;
+    font-weight: 700;
+    color: #0d3b6e;
+    margin: 28px 0 12px;
+    padding-left: 12px;
+    border-left: 4px solid #4a9eff;
+  }
+
+  h3 {
+    font-size: 11.5pt;
+    font-weight: 600;
+    color: #1a2e50;
+    margin: 20px 0 8px;
+  }
+
+  h4 {
+    font-size: 10.5pt;
+    font-weight: 600;
+    color: #2c4a7c;
+    margin: 14px 0 6px;
+  }
+
+  /* ── Body Text ── */
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 8px 24px; }
+  li { margin: 4px 0; }
+
+  /* ── Code ── */
+  code {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9.5pt;
+    background: #f0f4f8;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #c0392b;
+  }
+
+  pre {
+    background: #1e2a3a;
+    color: #c9d1d9;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9pt;
+    line-height: 1.6;
+    padding: 14px 16px;
+    border-radius: 6px;
+    margin: 12px 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  pre .comment { color: #6a9955; }
+  pre .key     { color: #9cdcfe; }
+  pre .str     { color: #ce9178; }
+  pre .num     { color: #b5cea8; }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 9.5pt;
+  }
+
+  th {
+    background: #0d3b6e;
+    color: #fff;
+    padding: 8px 10px;
+    text-align: left;
+    font-weight: 600;
+  }
+
+  td {
+    padding: 7px 10px;
+    border-bottom: 1px solid #e8edf2;
+    vertical-align: top;
+  }
+
+  tr:nth-child(even) td { background: #f5f8fc; }
+  tr:hover td { background: #eaf1fb; }
+
+  td code { font-size: 9pt; }
+
+  /* ── Callouts ── */
+  .callout {
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    border-left: 5px solid;
+    font-size: 10pt;
+  }
+
+  .callout.info    { background: #e8f4fd; border-color: #3498db; }
+  .callout.warning { background: #fef9e7; border-color: #f39c12; }
+  .callout.danger  { background: #fdecea; border-color: #e74c3c; }
+  .callout.tip     { background: #eafaf1; border-color: #27ae60; }
+
+  .callout strong { display: block; margin-bottom: 4px; }
+  .callout.info strong    { color: #1a5276; }
+  .callout.warning strong { color: #9a6000; }
+  .callout.danger strong  { color: #c0392b; }
+  .callout.tip strong     { color: #1d6a3a; }
+
+  /* ── Section header stripe ── */
+  .section-intro {
+    background: #f0f6ff;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    font-size: 10.5pt;
+    color: #2c4a7c;
+    border: 1px solid #cddff8;
+  }
+
+  /* ── Path highlight ── */
+  .path {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9.5pt;
+    background: #fff3cd;
+    color: #856404;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid #ffc107;
+  }
+
+  /* ── Step list ── */
+  .steps { counter-reset: step; list-style: none; margin-left: 0; }
+  .steps li {
+    counter-increment: step;
+    padding: 8px 8px 8px 44px;
+    position: relative;
+    margin-bottom: 6px;
+    background: #f8fbff;
+    border-radius: 6px;
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 10px;
+    top: 8px;
+    background: #0d3b6e;
+    color: #fff;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9pt;
+    font-weight: 700;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 48px;
+    padding-top: 12px;
+    border-top: 1px solid #ddd;
+    font-size: 8.5pt;
+    color: #999;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- COVER PAGE                                             -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page">
+  <div class="cover">
+    <div class="logo-bar">NS AI</div>
+    <h1>Runtime<br>User Manual</h1>
+    <div class="subtitle">AI Vision Inspection System</div>
+    <div class="divider"></div>
+    <div class="meta">
+      Version 1.0<br>
+      Revised: May 2026<br>
+      For internal use only
+    </div>
+    <div class="badge">CONFIDENTIAL</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS                                      -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page toc-page page-break">
+  <div class="toc-title">Table of Contents</div>
+
+  <div class="toc-item toc-h1"><span>1 &nbsp; System Overview</span><span class="toc-num">3</span></div>
+  <div class="toc-item toc-h2"><span>1.1 &nbsp; What the system does</span></div>
+  <div class="toc-item toc-h2"><span>1.2 &nbsp; Key components</span></div>
+
+  <div class="toc-item toc-h1"><span>2 &nbsp; First Launch</span><span class="toc-num">4</span></div>
+  <div class="toc-item toc-h2"><span>2.1 &nbsp; Starting the application</span></div>
+  <div class="toc-item toc-h2"><span>2.2 &nbsp; Accessing the dashboard</span></div>
+  <div class="toc-item toc-h2"><span>2.3 &nbsp; Stopping the application</span></div>
+
+  <div class="toc-item toc-h1"><span>3 &nbsp; Dashboard Overview</span><span class="toc-num">5</span></div>
+  <div class="toc-item toc-h2"><span>3.1 &nbsp; Camera cards</span></div>
+  <div class="toc-item toc-h2"><span>3.2 &nbsp; Per-camera controls</span></div>
+  <div class="toc-item toc-h2"><span>3.3 &nbsp; Dashboard layout</span></div>
+
+  <div class="toc-item toc-h1"><span>4 &nbsp; Line (Camera) Configuration</span><span class="toc-num">6</span></div>
+  <div class="toc-item toc-h2"><span>4.1 &nbsp; Adding a new line</span></div>
+  <div class="toc-item toc-h2"><span>4.2 &nbsp; Camera settings</span></div>
+  <div class="toc-item toc-h2"><span>4.3 &nbsp; Detector type</span></div>
+  <div class="toc-item toc-h2"><span>4.4 &nbsp; Confidence thresholds</span></div>
+
+  <div class="toc-item toc-h1"><span>5 &nbsp; Save Path Configuration</span><span class="toc-num">9</span></div>
+  <div class="toc-item toc-h2"><span>5.1 &nbsp; Where images are saved</span></div>
+  <div class="toc-item toc-h2"><span>5.2 &nbsp; Setting the save path</span></div>
+  <div class="toc-item toc-h2"><span>5.3 &nbsp; Saved folder structure</span></div>
+  <div class="toc-item toc-h2"><span>5.4 &nbsp; AWS S3 remote storage</span></div>
+
+  <div class="toc-item toc-h1"><span>6 &nbsp; Settings Files Reference</span><span class="toc-num">11</span></div>
+  <div class="toc-item toc-h2"><span>6.1 &nbsp; config.json (per-line)</span></div>
+  <div class="toc-item toc-h2"><span>6.2 &nbsp; global_settings.json</span></div>
+  <div class="toc-item toc-h2"><span>6.3 &nbsp; Path conventions</span></div>
+
+  <div class="toc-item toc-h1"><span>7 &nbsp; Admin Page</span><span class="toc-num">14</span></div>
+  <div class="toc-item toc-h2"><span>7.1 &nbsp; Accessing admin</span></div>
+  <div class="toc-item toc-h2"><span>7.2 &nbsp; Global settings</span></div>
+  <div class="toc-item toc-h2"><span>7.3 &nbsp; S3 configuration</span></div>
+
+  <div class="toc-item toc-h1"><span>8 &nbsp; Troubleshooting</span><span class="toc-num">15</span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 1: OVERVIEW                                    -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">1 &nbsp; System Overview</h1>
+
+  <h2>1.1 &nbsp; What the system does</h2>
+  <p>
+    NS Runtime is a real-time AI vision inspection platform.
+    It connects to up to <strong>10 cameras</strong> on production lines, runs an AI model
+    on every frame, and automatically triggers a reject signal when a defective product is detected.
+    All defect images are saved to disk (and optionally to AWS S3) for traceability.
+  </p>
+
+  <div class="callout info">
+    <strong>Quick summary</strong>
+    Camera feed → AI detection → Reject signal → Image saved to disk
+  </div>
+
+  <h2>1.2 &nbsp; Key components</h2>
+
+  <table>
+    <tr><th>Component</th><th>Description</th></tr>
+    <tr><td><strong>Dashboard</strong></td><td>Web UI showing live camera feeds and controls. Open in a browser at <code>http://localhost:5173</code>.</td></tr>
+    <tr><td><strong>Backend API</strong></td><td>FastAPI server (port 8000) that manages workers, streams video, and serves settings.</td></tr>
+    <tr><td><strong>Inspection Worker</strong></td><td>Background thread per camera. Runs AI inference and triggers the reject signal.</td></tr>
+    <tr><td><strong>Detector</strong></td><td>Pluggable AI model: YOLO (object detection), PaddleOCR (text), or CNN (classification).</td></tr>
+    <tr><td><strong>Rejecter</strong></td><td>Sends a timed I/O signal to the conveyor actuator after a configurable frame delay.</td></tr>
+    <tr><td><strong>Data Manager</strong></td><td>Saves defect images, maintains a preview folder, and auto-archives old files.</td></tr>
+  </table>
+
+  <h2>1.3 &nbsp; Supported camera types</h2>
+  <table>
+    <tr><th>Camera</th><th>How to connect</th><th>Notes</th></tr>
+    <tr><td>Basler GigE (acA series)</td><td>Ethernet (same subnet as PC)</td><td>Highest performance; requires <code>.pfs</code> settings file</td></tr>
+    <tr><td>USB Webcam</td><td>USB port</td><td>Easy setup; lower frame rate</td></tr>
+    <tr><td>IP Camera (RTSP)</td><td>Network (RTSP URL)</td><td>Set Camera Type to <em>RTSP</em> and enter the stream URL</td></tr>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 2: FIRST LAUNCH                                -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">2 &nbsp; First Launch</h1>
+
+  <h2>2.1 &nbsp; Starting the application</h2>
+
+  <p>Open a terminal, navigate to the project folder, and run:</p>
+
+  <pre>cd ~/NS_runtime
+./start.sh</pre>
+
+  <p><code>start.sh</code> automatically:</p>
+  <ul>
+    <li>Kills any leftover processes on ports 8000 and 5173</li>
+    <li>Starts the FastAPI backend on port <strong>8000</strong></li>
+    <li>Starts the React frontend on port <strong>5173</strong></li>
+    <li>Opens the dashboard in your default browser</li>
+  </ul>
+
+  <div class="callout warning">
+    <strong>Before the first run</strong>
+    Make sure <code>setup.sh</code> has been run at least once, otherwise dependencies will be missing.
+    <pre style="margin-top:8px">chmod +x setup.sh && ./setup.sh</pre>
+  </div>
+
+  <h2>2.2 &nbsp; Accessing the dashboard</h2>
+
+  <table>
+    <tr><th>URL</th><th>Description</th></tr>
+    <tr><td><code>http://localhost:5173</code></td><td>Main dashboard (camera feeds + controls)</td></tr>
+    <tr><td><code>http://&lt;PC-IP&gt;:5173</code></td><td>Access from another device on the same network</td></tr>
+    <tr><td><code>http://localhost:8000/docs</code></td><td>API documentation (Swagger UI)</td></tr>
+  </table>
+
+  <p>To find your PC's IP address:</p>
+  <pre>hostname -I | awk '{print $1}'</pre>
+
+  <h2>2.3 &nbsp; Stopping the application</h2>
+
+  <p>Press <strong>Ctrl + C</strong> in the terminal where <code>start.sh</code> is running.
+  Both the backend and frontend will shut down cleanly.</p>
+
+  <p>If the terminal is unavailable, kill the processes manually:</p>
+  <pre>lsof -ti :8000 | xargs kill -9
+lsof -ti :5173 | xargs kill -9</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 3: DASHBOARD                                   -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">3 &nbsp; Dashboard Overview</h1>
+
+  <div class="section-intro">
+    The dashboard is the main screen. It shows live video from all active cameras and lets you
+    control each inspection line individually.
+  </div>
+
+  <h2>3.1 &nbsp; Camera cards</h2>
+  <p>Each configured camera appears as a card in the grid. A card shows:</p>
+  <ul>
+    <li><strong>Live video feed</strong> — with AI bounding boxes drawn on detected defects</li>
+    <li><strong>Line name</strong> — e.g., "Line 1 — Pinhole"</li>
+    <li><strong>Status badge</strong> — Running / Stopped / Error</li>
+    <li><strong>Defect counter</strong> — total defects detected this session</li>
+    <li><strong>Last defect image</strong> — thumbnail of the most recent defect</li>
+  </ul>
+
+  <h2>3.2 &nbsp; Per-camera controls</h2>
+
+  <table>
+    <tr><th>Button</th><th>Action</th></tr>
+    <tr><td><strong>▶ Start</strong></td><td>Begin inspection on this camera</td></tr>
+    <tr><td><strong>■ Stop</strong></td><td>Pause inspection (camera feed stays visible)</td></tr>
+    <tr><td><strong>⚙ Settings</strong></td><td>Open the line configuration modal</td></tr>
+    <tr><td><strong>🗂 Collection</strong></td><td>Open a popup to browse saved defect images for this line</td></tr>
+    <tr><td><strong>🚫 Reject Off</strong></td><td>Disable the reject actuator signal (requires admin password)</td></tr>
+  </table>
+
+  <div class="callout warning">
+    <strong>Reject Off requires admin password</strong>
+    Disabling the reject signal is a safety-critical action. You will be prompted for the admin
+    password before it takes effect.
+  </div>
+
+  <h2>3.3 &nbsp; Dashboard layout</h2>
+  <p>
+    Cards can be resized and repositioned by dragging. The layout is saved automatically
+    and restored on the next launch. To reset the layout to defaults, go to the
+    <strong>Admin</strong> page and click <em>Reset Layout</em>.
+  </p>
+
+  <h2>3.4 &nbsp; Collection popup</h2>
+  <p>
+    Clicking the <strong>Collection</strong> button opens a modal showing the most recent
+    defect images for that camera. Images are organized by date and hour.
+    You can scroll through them, download individual images, or clear old previews.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 4: LINE CONFIGURATION                          -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">4 &nbsp; Line (Camera) Configuration</h1>
+
+  <div class="section-intro">
+    Each inspection line is configured through the <strong>Settings modal</strong> (⚙ button on each card)
+    or from the Admin page. Changes are saved to <code>workers/worker-XX/config.json</code>.
+  </div>
+
+  <h2>4.1 &nbsp; Adding a new line</h2>
+  <ol class="steps">
+    <li>Go to the <strong>Admin</strong> page (top-right icon).</li>
+    <li>Click <strong>Add Line</strong>.</li>
+    <li>Fill in the Line Name (e.g., <em>Line 3 — Scratch</em>).</li>
+    <li>Configure camera, detector, and save path (see sections below).</li>
+    <li>Click <strong>Save</strong>. The new card appears on the dashboard.</li>
+  </ol>
+
+  <h2>4.2 &nbsp; Camera settings</h2>
+
+  <table>
+    <tr><th>Field</th><th>Description</th><th>Example</th></tr>
+    <tr>
+      <td><strong>Camera Type</strong></td>
+      <td>Type of camera hardware</td>
+      <td><code>basler</code> / <code>usb</code> / <code>rtsp</code></td>
+    </tr>
+    <tr>
+      <td><strong>Camera IP / Index</strong></td>
+      <td>For Basler: IP address. For USB: device index (0, 1, …). For RTSP: full URL.</td>
+      <td><code>192.168.1.101</code> or <code>0</code></td>
+    </tr>
+    <tr>
+      <td><strong>PFS File</strong></td>
+      <td>Basler camera settings file exported from Pylon Viewer. Leave blank for USB/RTSP.</td>
+      <td><code>camera.pfs</code> (relative to worker directory)</td>
+    </tr>
+    <tr>
+      <td><strong>Crop Region</strong></td>
+      <td>Optional. Crop the frame to a rectangle: <code>x, y, w, h</code> in pixels.</td>
+      <td><code>100, 50, 1000, 800</code></td>
+    </tr>
+    <tr>
+      <td><strong>Rotation</strong></td>
+      <td>Rotate the frame. Values: 0, 90, 180, 270.</td>
+      <td><code>0</code></td>
+    </tr>
+  </table>
+
+  <div class="callout info">
+    <strong>Basler GigE setup tip</strong>
+    The camera and PC must be on the same subnet. Assign a static IP to the NIC connected to the camera:
+    <pre style="margin-top:8px">sudo ip addr add 192.168.1.1/24 dev eth0</pre>
+  </div>
+
+  <h2>4.3 &nbsp; Detector type</h2>
+  <p>Choose which AI model runs on each frame:</p>
+
+  <table>
+    <tr><th>Detector</th><th>Best for</th><th>Model file</th></tr>
+    <tr>
+      <td><strong>YOLO</strong></td>
+      <td>General defect detection — locates defect position with a bounding box</td>
+      <td><code>.pt</code> (Ultralytics YOLOv8/v12)</td>
+    </tr>
+    <tr>
+      <td><strong>PaddleOCR</strong></td>
+      <td>Text / label inspection — verifies printed text matches expected value</td>
+      <td>Built-in (no file needed unless custom model)</td>
+    </tr>
+    <tr>
+      <td><strong>CNN</strong></td>
+      <td>Whole-image classification — OK vs. Defect for the entire image</td>
+      <td><code>.pth</code> (PyTorch)</td>
+    </tr>
+  </table>
+
+  <h3>YOLO detector settings</h3>
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td><strong>Model Path</strong></td><td>Path to <code>.pt</code> weight file, relative to the worker directory. E.g., <code>weights/best.pt</code></td></tr>
+    <tr><td><strong>Device</strong></td><td><code>cuda</code> for GPU (faster), <code>cpu</code> for CPU-only machines</td></tr>
+  </table>
+
+  <h3>PaddleOCR detector settings</h3>
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td><strong>Expected Text</strong></td><td>The string that must appear in the image. If the recognized text does not match, it is marked as a defect.</td></tr>
+    <tr><td><strong>Language</strong></td><td>OCR language code: <code>en</code> (English), <code>korean</code>, <code>ch</code> (Chinese), etc.</td></tr>
+    <tr><td><strong>Use GPU</strong></td><td>Enable GPU acceleration for OCR inference.</td></tr>
+  </table>
+
+  <h3>CNN detector settings</h3>
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td><strong>Model Path</strong></td><td>Path to <code>.pth</code> weight file, relative to the worker directory.</td></tr>
+    <tr><td><strong>Input Size</strong></td><td>Image size the model expects (e.g., <code>224</code> for 224×224).</td></tr>
+    <tr><td><strong>Class Names</strong></td><td>Comma-separated class names in training order, e.g. <code>normal, defect</code>.</td></tr>
+  </table>
+
+  <h2>4.4 &nbsp; Confidence thresholds</h2>
+  <p>
+    Thresholds control <em>how confident</em> the model must be before a detection is treated as a defect.
+    Higher values = fewer false positives, but may miss real defects.
+  </p>
+
+  <table>
+    <tr><th>Class name</th><th>Threshold</th><th>Meaning</th></tr>
+    <tr><td><code>defect</code></td><td>0.70</td><td>Reject only if the model is ≥ 70% confident</td></tr>
+    <tr><td><code>pinhole</code></td><td>0.85</td><td>Pinhole is hard to detect — higher threshold to avoid false alarms</td></tr>
+    <tr><td><code>scratch</code></td><td>0.60</td><td>Scratch: lower threshold (less margin for error)</td></tr>
+  </table>
+
+  <div class="callout tip">
+    <strong>Tuning tip</strong>
+    Start with 0.70. If you see too many false rejects, increase the threshold.
+    If real defects are being missed, decrease it. Adjust one class at a time.
+  </div>
+
+  <h2>4.5 &nbsp; Reject timing</h2>
+
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td><strong>Reject Delay (frames)</strong></td><td>How many frames to wait before activating the reject actuator. Compensates for the distance between the camera and the reject mechanism.</td></tr>
+    <tr><td><strong>Reject Duration (ms)</strong></td><td>How long the reject signal stays active (milliseconds).</td></tr>
+  </table>
+
+  <div class="callout info">
+    <strong>Calculating reject delay</strong>
+    Measure the physical distance (cm) from the camera to the reject actuator,
+    then divide by the product travel per frame. Recalibrate if conveyor speed changes.
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 5: SAVE PATH CONFIGURATION                     -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">5 &nbsp; Save Path Configuration</h1>
+
+  <div class="section-intro">
+    <strong>This section is critical.</strong>
+    Incorrect save path configuration means defect images will not be saved, or will be saved to
+    the wrong location. Read this section carefully before starting a production line.
+  </div>
+
+  <h2>5.1 &nbsp; Where images are saved</h2>
+  <p>
+    Every defect image is saved under a root directory called <strong>save_root</strong>.
+    You configure <code>save_root</code> per inspection line in the line settings modal.
+  </p>
+
+  <div class="callout warning">
+    <strong>Important: path is relative to the worker directory</strong>
+    All paths in <code>config.json</code> — including <code>save_root</code> — are
+    <em>relative to that line's worker directory</em>, not to the project root.
+    See Section 6.3 for details.
+  </div>
+
+  <h2>5.2 &nbsp; Setting the save path</h2>
+
+  <h3>Option A — Using the Settings modal (recommended)</h3>
+  <ol class="steps">
+    <li>Click the <strong>⚙ Settings</strong> button on the camera card.</li>
+    <li>Scroll to the <strong>Storage</strong> section.</li>
+    <li>In the <strong>Save Root</strong> field, enter the path where defect images should be stored.</li>
+    <li>Click <strong>Save</strong>.</li>
+  </ol>
+
+  <h4>Path examples</h4>
+  <table>
+    <tr><th>What you type</th><th>Actual save location</th></tr>
+    <tr>
+      <td><span class="path">data</span></td>
+      <td><code>~/NS_runtime/workers/worker-01/data/</code><br>(relative — recommended)</td>
+    </tr>
+    <tr>
+      <td><span class="path">/mnt/nas/line1</span></td>
+      <td><code>/mnt/nas/line1/</code><br>(absolute — NAS or external drive)</td>
+    </tr>
+    <tr>
+      <td><span class="path">/home/nongshim/defect_images/line1</span></td>
+      <td><code>/home/nongshim/defect_images/line1/</code><br>(absolute — custom location)</td>
+    </tr>
+  </table>
+
+  <div class="callout tip">
+    <strong>Use absolute paths for NAS / external storage</strong>
+    If saving to a network share or an external drive, always use the full absolute path
+    (starting with <code>/</code>). Relative paths are only convenient when saving locally
+    inside the worker directory.
+  </div>
+
+  <h3>Option B — Editing config.json directly</h3>
+  <p>Open the worker's config file in a text editor:</p>
+  <pre>nano ~/NS_runtime/workers/worker-01/config.json</pre>
+
+  <p>Find and edit the <code>save_root</code> field:</p>
+  <pre>{
+  <span class="key">"save_root"</span>: <span class="str">"/mnt/nas/inspection/line1"</span>,
+  <span class="key">"save_normal"</span>: <span class="num">false</span>,
+  <span class="key">"preview_count"</span>: <span class="num">20</span>
+}</pre>
+
+  <h2>5.3 &nbsp; Saved folder structure</h2>
+  <p>
+    Once a <code>save_root</code> is configured, the system automatically creates this
+    directory structure:
+  </p>
+
+  <pre>save_root/                          ← your configured path
+├── defect/
+│   └── 2026-05-23/                 ← date folder (auto-created)
+│       └── 14/                     ← hour folder (auto-created)
+│           ├── defect-0.93-20260523-140032-line1.jpg   ← defect image
+│           └── defect-0.93-20260523-140032-line1.txt   ← detection coordinates
+├── preview/                        ← most recent N defect images (quick view)
+├── archive/                        ← images that overflowed preview/ are moved here
+└── normal/                         ← only created when save_normal = true</pre>
+
+  <h3>File naming format</h3>
+  <p>Each defect image is named:</p>
+  <pre>defect-{confidence}-{YYYYMMDD}-{HHmmss}-{line_name}.jpg</pre>
+
+  <table>
+    <tr><th>Part</th><th>Meaning</th><th>Example</th></tr>
+    <tr><td><code>defect</code></td><td>Fixed prefix</td><td><code>defect</code></td></tr>
+    <tr><td><code>{confidence}</code></td><td>AI confidence score</td><td><code>0.93</code> = 93%</td></tr>
+    <tr><td><code>{YYYYMMDD}</code></td><td>Date</td><td><code>20260523</code></td></tr>
+    <tr><td><code>{HHmmss}</code></td><td>Time</td><td><code>140032</code></td></tr>
+    <tr><td><code>{line_name}</code></td><td>The line name from config</td><td><code>line1</code></td></tr>
+  </table>
+
+  <h3>Preview and archive</h3>
+  <table>
+    <tr><th>Folder</th><th>Purpose</th><th>Controlled by</th></tr>
+    <tr><td><code>preview/</code></td><td>Holds the most recent N defect images for quick viewing in the dashboard Collection popup.</td><td><code>preview_count</code> in config (default: 20)</td></tr>
+    <tr><td><code>archive/</code></td><td>When preview/ exceeds the limit, older images are moved here automatically.</td><td>Automatic</td></tr>
+    <tr><td><code>normal/</code></td><td>Saves images of non-defective products. Disabled by default (saves a lot of disk space).</td><td><code>save_normal</code> in config</td></tr>
+  </table>
+
+  <div class="callout danger">
+    <strong>Disk space warning</strong>
+    With <code>save_normal = true</code> at high frame rates, disk usage can be very high.
+    Keep <code>save_normal = false</code> unless you specifically need to collect normal images
+    for retraining the model.
+  </div>
+
+  <h2>5.4 &nbsp; AWS S3 remote storage</h2>
+  <p>
+    Defect images can be automatically uploaded to an S3 bucket in addition to local storage.
+    Configure S3 from the <strong>Admin</strong> page → <strong>S3 Settings</strong>.
+  </p>
+
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td><strong>Bucket Name</strong></td><td>Your S3 bucket name</td></tr>
+    <tr><td><strong>Region</strong></td><td>AWS region, e.g. <code>us-east-1</code></td></tr>
+    <tr><td><strong>Access Key ID</strong></td><td>AWS IAM access key with S3 write permission</td></tr>
+    <tr><td><strong>Secret Access Key</strong></td><td>Corresponding secret key</td></tr>
+    <tr><td><strong>S3 Prefix</strong></td><td>Optional folder prefix inside the bucket, e.g. <code>line1/</code></td></tr>
+  </table>
+
+  <div class="callout info">
+    <strong>S3 upload is non-blocking</strong>
+    Images are always saved locally first. S3 upload happens in the background and does not
+    affect inspection performance. If the upload fails, images remain on disk.
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 6: SETTINGS FILES                              -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">6 &nbsp; Settings Files Reference</h1>
+
+  <h2>6.1 &nbsp; config.json (per-line)</h2>
+
+  <p>
+    Located at <span class="path">workers/worker-XX/config.json</span>. One file per inspection line.
+    Edited automatically when you save from the Settings modal, but can also be edited by hand.
+  </p>
+
+  <h3>Full annotated example</h3>
+  <pre>{
+  <span class="comment">// ── Identity ─────────────────────────────────────────────</span>
+  <span class="key">"line_name"</span>:          <span class="str">"Line 1 - Pinhole"</span>,
+  <span class="key">"worker_id"</span>:          <span class="str">"worker-01"</span>,
+
+  <span class="comment">// ── Camera ───────────────────────────────────────────────</span>
+  <span class="key">"camera_type"</span>:        <span class="str">"basler"</span>,     <span class="comment">// basler | usb | rtsp</span>
+  <span class="key">"camera_ip"</span>:          <span class="str">"192.168.1.101"</span>,
+  <span class="key">"pfs_file"</span>:           <span class="str">"camera.pfs"</span>,  <span class="comment">// relative to worker dir</span>
+  <span class="key">"crop"</span>:               <span class="num">null</span>,          <span class="comment">// or [x, y, w, h]</span>
+  <span class="key">"rotate"</span>:             <span class="num">0</span>,             <span class="comment">// 0 | 90 | 180 | 270</span>
+
+  <span class="comment">// ── Product / Detector ───────────────────────────────────</span>
+  <span class="key">"detector_type"</span>:      <span class="str">"yolo"</span>,        <span class="comment">// yolo | paddleocr | cnn</span>
+  <span class="key">"model_path"</span>:         <span class="str">"weights/best.pt"</span>,
+  <span class="key">"device"</span>:             <span class="str">"cuda"</span>,        <span class="comment">// cuda | cpu</span>
+  <span class="key">"class_thresholds"</span>:   {
+    <span class="key">"defect"</span>:           <span class="num">0.70</span>,
+    <span class="key">"pinhole"</span>:          <span class="num">0.85</span>
+  },
+  <span class="key">"detector_config"</span>:    {},            <span class="comment">// extra settings per detector type</span>
+
+  <span class="comment">// ── Reject Timing ────────────────────────────────────────</span>
+  <span class="key">"reject_delay_frames"</span>: <span class="num">12</span>,           <span class="comment">// frames between detect and actuate</span>
+  <span class="key">"reject_duration_ms"</span>:  <span class="num">300</span>,          <span class="comment">// how long the signal stays HIGH</span>
+  <span class="key">"reject_enabled"</span>:     <span class="num">true</span>,
+
+  <span class="comment">// ── Save Path ────────────────────────────────────────────</span>
+  <span class="key">"save_root"</span>:          <span class="str">"data"</span>,        <span class="comment">// relative to worker dir — or absolute</span>
+  <span class="key">"save_normal"</span>:        <span class="num">false</span>,         <span class="comment">// save non-defect frames? (uses disk)</span>
+  <span class="key">"preview_count"</span>:      <span class="num">20</span>            <span class="comment">// max images in preview/ folder</span>
+}</pre>
+
+  <h3>Field reference</h3>
+  <table>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Notes</th></tr>
+    <tr><td><code>line_name</code></td><td>string</td><td>Yes</td><td>Display name shown on the dashboard card</td></tr>
+    <tr><td><code>camera_type</code></td><td>string</td><td>Yes</td><td><code>basler</code> / <code>usb</code> / <code>rtsp</code></td></tr>
+    <tr><td><code>camera_ip</code></td><td>string</td><td>Basler only</td><td>IP address of the Basler camera</td></tr>
+    <tr><td><code>pfs_file</code></td><td>string</td><td>Basler only</td><td>Camera settings file, relative to worker dir</td></tr>
+    <tr><td><code>crop</code></td><td>array / null</td><td>No</td><td><code>[x, y, w, h]</code> in pixels; <code>null</code> = full frame</td></tr>
+    <tr><td><code>rotate</code></td><td>int</td><td>No</td><td>Degrees: 0, 90, 180, or 270</td></tr>
+    <tr><td><code>detector_type</code></td><td>string</td><td>Yes</td><td><code>yolo</code> / <code>paddleocr</code> / <code>cnn</code></td></tr>
+    <tr><td><code>model_path</code></td><td>string</td><td>YOLO / CNN</td><td>Path to weight file, relative to worker dir</td></tr>
+    <tr><td><code>device</code></td><td>string</td><td>No</td><td><code>cuda</code> or <code>cpu</code> (default: <code>cuda</code>)</td></tr>
+    <tr><td><code>class_thresholds</code></td><td>object</td><td>No</td><td>Map of class name → confidence float (0.0–1.0)</td></tr>
+    <tr><td><code>detector_config</code></td><td>object</td><td>No</td><td>Detector-specific extra settings (e.g., <code>expected_text</code> for OCR)</td></tr>
+    <tr><td><code>reject_delay_frames</code></td><td>int</td><td>No</td><td>Default: 0</td></tr>
+    <tr><td><code>reject_duration_ms</code></td><td>int</td><td>No</td><td>Default: 300 ms</td></tr>
+    <tr><td><code>reject_enabled</code></td><td>bool</td><td>No</td><td>Default: true</td></tr>
+    <tr><td><code>save_root</code></td><td>string</td><td>Yes</td><td>Base folder for all saved images</td></tr>
+    <tr><td><code>save_normal</code></td><td>bool</td><td>No</td><td>Default: false</td></tr>
+    <tr><td><code>preview_count</code></td><td>int</td><td>No</td><td>Default: 20</td></tr>
+  </table>
+
+  <h2>6.2 &nbsp; global_settings.json</h2>
+
+  <p>Located at <span class="path">configs/global_settings.json</span>.
+  Controls system-wide settings shared across all lines.</p>
+
+  <pre>{
+  <span class="comment">// ── Admin ─────────────────────────────────────────────────</span>
+  <span class="key">"admin_password"</span>:     <span class="str">"1"</span>,           <span class="comment">// CHANGE THIS IMMEDIATELY</span>
+
+  <span class="comment">// ── Dashboard ────────────────────────────────────────────</span>
+  <span class="key">"grid_layout"</span>:        [],            <span class="comment">// auto-managed by the UI</span>
+  <span class="key">"max_workers"</span>:        <span class="num">10</span>,            <span class="comment">// maximum number of camera lines</span>
+
+  <span class="comment">// ── S3 (optional) ────────────────────────────────────────</span>
+  <span class="key">"s3_enabled"</span>:         <span class="num">false</span>,
+  <span class="key">"s3_bucket"</span>:          <span class="str">""</span>,
+  <span class="key">"s3_region"</span>:          <span class="str">"us-east-1"</span>,
+  <span class="key">"s3_access_key"</span>:      <span class="str">""</span>,
+  <span class="key">"s3_secret_key"</span>:      <span class="str">""</span>,
+  <span class="key">"s3_prefix"</span>:          <span class="str">""</span>
+}</pre>
+
+  <div class="callout danger">
+    <strong>Change the admin password before production use</strong>
+    The default password is <code>1</code>. Change it to something secure via the Admin page
+    or by editing <code>admin_password</code> in this file directly.
+  </div>
+
+  <h2>6.3 &nbsp; Path conventions</h2>
+
+  <div class="callout info">
+    <strong>Core rule: paths in config.json are relative to the worker directory</strong>
+  </div>
+
+  <p>The worker directory for worker-01 is:</p>
+  <pre>~/NS_runtime/workers/worker-01/</pre>
+
+  <p>So <code>"save_root": "data"</code> maps to:</p>
+  <pre>~/NS_runtime/workers/worker-01/data/</pre>
+
+  <p>And <code>"model_path": "weights/best.pt"</code> maps to:</p>
+  <pre>~/NS_runtime/workers/worker-01/weights/best.pt</pre>
+
+  <h3>When to use absolute paths</h3>
+  <table>
+    <tr><th>Scenario</th><th>Recommended path</th></tr>
+    <tr><td>Saving locally inside the worker directory</td><td>Relative: <code>data</code></td></tr>
+    <tr><td>Saving to a NAS or network share</td><td>Absolute: <code>/mnt/nas/line1</code></td></tr>
+    <tr><td>Saving to an external USB drive</td><td>Absolute: <code>/media/usb/defects/line1</code></td></tr>
+    <tr><td>Shared folder accessible by multiple PCs</td><td>Absolute: <code>/home/shared/inspection</code></td></tr>
+  </table>
+
+  <h3>Mounting a NAS for remote storage</h3>
+  <pre><span class="comment"># Install NFS client</span>
+sudo apt install -y nfs-common
+
+<span class="comment"># Mount the NAS share</span>
+sudo mount 192.168.1.200:/exports/inspection /mnt/nas
+
+<span class="comment"># Auto-mount on boot (add to /etc/fstab)</span>
+192.168.1.200:/exports/inspection  /mnt/nas  nfs  defaults  0  0</pre>
+
+  <p>Then set <code>save_root</code> to <code>/mnt/nas/line1</code> in config.json.</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 7: ADMIN PAGE                                  -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">7 &nbsp; Admin Page</h1>
+
+  <h2>7.1 &nbsp; Accessing admin</h2>
+  <ol class="steps">
+    <li>Click the <strong>Admin</strong> icon (gear/lock icon) in the top-right corner of the dashboard.</li>
+    <li>Enter the admin password (default: <code>1</code>).</li>
+    <li>The Admin page opens.</li>
+  </ol>
+
+  <h2>7.2 &nbsp; Available actions</h2>
+
+  <table>
+    <tr><th>Action</th><th>Description</th></tr>
+    <tr><td><strong>Add Line</strong></td><td>Create a new inspection line / camera card</td></tr>
+    <tr><td><strong>Delete Line</strong></td><td>Remove a line and its card from the dashboard</td></tr>
+    <tr><td><strong>Reset Layout</strong></td><td>Restore dashboard grid to default positions</td></tr>
+    <tr><td><strong>Change Admin Password</strong></td><td>Update the admin password stored in global_settings.json</td></tr>
+    <tr><td><strong>S3 Settings</strong></td><td>Configure AWS S3 bucket for remote image upload</td></tr>
+    <tr><td><strong>View History</strong></td><td>Browse the defect history log (count per line per day)</td></tr>
+  </table>
+
+  <h2>7.3 &nbsp; Changing the admin password</h2>
+  <ol class="steps">
+    <li>Open the Admin page.</li>
+    <li>Click <strong>Change Password</strong>.</li>
+    <li>Enter current password, then new password twice.</li>
+    <li>Click <strong>Save</strong>.</li>
+  </ol>
+
+  <p>Alternatively, edit <code>configs/global_settings.json</code> directly:</p>
+  <pre>{
+  <span class="key">"admin_password"</span>: <span class="str">"your-secure-password"</span>
+}</pre>
+
+  <h2>7.4 &nbsp; S3 configuration</h2>
+  <ol class="steps">
+    <li>On the Admin page, click <strong>S3 Settings</strong>.</li>
+    <li>Toggle <strong>Enable S3 Upload</strong>.</li>
+    <li>Fill in Bucket Name, Region, Access Key ID, Secret Access Key.</li>
+    <li>Optionally set a Prefix (folder path inside the bucket).</li>
+    <li>Click <strong>Test Connection</strong> to verify credentials.</li>
+    <li>Click <strong>Save</strong>.</li>
+  </ol>
+
+  <div class="callout info">
+    <strong>IAM permissions required for S3</strong>
+    The AWS IAM user must have at minimum: <code>s3:PutObject</code> and <code>s3:GetBucketLocation</code>
+    on the target bucket.
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!-- SECTION 8: TROUBLESHOOTING                             -->
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="page page-break">
+  <h1 class="part">8 &nbsp; Troubleshooting</h1>
+
+  <h2>8.1 &nbsp; Application won't start</h2>
+
+  <table>
+    <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+    <tr>
+      <td><code>uv: command not found</code></td>
+      <td>uv not in PATH</td>
+      <td><pre style="margin:0">echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc</pre></td>
+    </tr>
+    <tr>
+      <td>Port 8000 / 5173 already in use</td>
+      <td>Old process still running</td>
+      <td><pre style="margin:0">lsof -ti :8000 | xargs kill -9
+lsof -ti :5173 | xargs kill -9</pre></td>
+    </tr>
+    <tr>
+      <td><code>ModuleNotFoundError</code></td>
+      <td>Python deps not installed</td>
+      <td><pre style="margin:0">cd ~/NS_runtime && uv sync</pre></td>
+    </tr>
+  </table>
+
+  <h2>8.2 &nbsp; Camera not connecting</h2>
+
+  <table>
+    <tr><th>Camera type</th><th>Check</th></tr>
+    <tr>
+      <td><strong>Basler GigE</strong></td>
+      <td>
+        1. Verify the camera and PC NIC are on the same subnet.<br>
+        2. Check the IP in config.json matches the camera's IP (visible in Pylon Viewer).<br>
+        3. Ensure <code>camera.pfs</code> file exists in the worker directory.
+      </td>
+    </tr>
+    <tr>
+      <td><strong>USB Webcam</strong></td>
+      <td>
+        Try index 0, 1, 2… until the feed appears.
+        Check with: <code>ls /dev/video*</code>
+      </td>
+    </tr>
+    <tr>
+      <td><strong>RTSP</strong></td>
+      <td>
+        Test the stream URL with:<br>
+        <code>ffplay rtsp://192.168.1.100:554/stream</code>
+      </td>
+    </tr>
+  </table>
+
+  <h2>8.3 &nbsp; Images not being saved</h2>
+  <table>
+    <tr><th>Check</th><th>How</th></tr>
+    <tr><td>Is <code>save_root</code> set correctly in config.json?</td><td>Open Settings modal and verify the Save Root field.</td></tr>
+    <tr><td>Does the directory exist and is it writable?</td><td><pre style="margin:0">ls -la /your/save/path
+touch /your/save/path/test.txt</pre></td></tr>
+    <tr><td>Is the inspection worker running?</td><td>Status badge on camera card should show <em>Running</em>.</td></tr>
+    <tr><td>Are thresholds too high?</td><td>Lower confidence thresholds temporarily to test saving.</td></tr>
+  </table>
+
+  <h2>8.4 &nbsp; GPU not detected</h2>
+  <pre><span class="comment"># Verify NVIDIA driver</span>
+nvidia-smi
+
+<span class="comment"># Verify PyTorch CUDA support</span>
+uv run python -c "import torch; print('CUDA:', torch.cuda.is_available())"
+
+<span class="comment"># Reinstall CUDA-enabled PyTorch if needed</span>
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118</pre>
+
+  <h2>8.5 &nbsp; Frontend not loading</h2>
+  <pre>cd ~/NS_runtime/frontend
+rm -rf node_modules package-lock.json
+npm install
+npm run build</pre>
+
+  <h2>8.6 &nbsp; Defect detection seems wrong (too many / too few)</h2>
+  <table>
+    <tr><th>Problem</th><th>Action</th></tr>
+    <tr><td>Too many false positives (good products rejected)</td><td>Increase the class threshold (e.g., 0.70 → 0.85).</td></tr>
+    <tr><td>Too many false negatives (defects not caught)</td><td>Decrease the class threshold (e.g., 0.70 → 0.55).</td></tr>
+    <tr><td>Wrong class being detected</td><td>Verify <code>class_thresholds</code> key names match the model's class names exactly.</td></tr>
+    <tr><td>Model not loading</td><td>Check that <code>model_path</code> points to an existing file inside the worker directory.</td></tr>
+  </table>
+
+  <div class="footer">
+    NS Runtime — User Manual v1.0 · May 2026 · Confidential / Internal Use Only
+  </div>
+</div>
+
+</body>
+</html>
