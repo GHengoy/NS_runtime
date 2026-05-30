@@ -63,6 +63,36 @@ def _make_config(collection_mode: str = 'auto') -> MagicMock:
     return cfg
 
 
+def _make_config_with_yolo_thresholds(collection_mode: str = 'auto') -> MagicMock:
+    """OCR 제품 설정처럼 YOLO class_thresholds/save_thresholds가 남아있는 경우."""
+    cfg = MagicMock()
+    cfg.collection_mode = collection_mode
+    cfg.class_thresholds = {"person": 0.7, "car": 0.7}
+    cfg.save_thresholds = {"person": 0.6, "car": 0.6}
+    cfg.line_name = 'test_line'
+    return cfg
+
+
+def _make_ocr_detector(is_defect: bool) -> MagicMock:
+    """OCR 디텍터: label이 'text:date_check', is_defect는 패턴 매칭 결과."""
+    from unittest.mock import MagicMock
+    from inspection_framework.detector import DetectionResult
+
+    det = MagicMock()
+    result = DetectionResult(
+        label="text:date_check",
+        confidence=0.9,
+        bbox_xyxy=[0, 0, 100, 30],
+        is_defect=is_defect,
+        class_threshold=1.0,
+        recognized_text="2025.01.01" if not is_defect else "WRONG",
+    )
+    det.detect.return_value = [result]
+    det.draw.return_value = _make_frame()
+    det.has_defect.side_effect = lambda dets: any(d.is_defect for d in dets)
+    return det
+
+
 # ── R1 ───────────────────────────────────────────────────────────────────────
 
 def test_R1_continuous_mode_skips_rejecter_push():
@@ -135,3 +165,54 @@ def test_R4_continuous_mode_with_defect_skips_push():
     )
 
     rejecter.push.assert_not_called()
+
+
+# ── R5 ───────────────────────────────────────────────────────────────────────
+
+def test_R5_ocr_defect_with_yolo_thresholds_calls_push_with_defect():
+    """
+    OCR 제품에 YOLO class_thresholds/save_thresholds가 설정되어 있어도
+    OCR 패턴 불일치(is_defect=True)가 rejecter.push(is_defect=True)로 전달된다.
+
+    버그 재현: label='text:date_check'가 class_thresholds에 없으면
+    이전 코드는 is_defect=False로 강제 덮어써서 리젝트가 안 됨.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'inspection_framework'))
+
+    frame = _make_frame()
+    rejecter = MagicMock()
+
+    _process_frame(
+        frame, frame,
+        detector=_make_ocr_detector(is_defect=True),
+        rejecter=rejecter,
+        data_manager=_FakeDataManager(),
+        config=_make_config_with_yolo_thresholds(collection_mode='auto'),
+    )
+
+    rejecter.push.assert_called_once()
+    _, kwargs = rejecter.push.call_args
+    assert kwargs.get('is_defect') is True, "OCR 불량이 리젝트 신호로 전달되어야 합니다"
+
+
+# ── R6 ───────────────────────────────────────────────────────────────────────
+
+def test_R6_ocr_normal_with_yolo_thresholds_calls_push_without_defect():
+    """
+    OCR 패턴 일치(is_defect=False)이면 rejecter.push(is_defect=False)가 호출된다.
+    """
+    frame = _make_frame()
+    rejecter = MagicMock()
+
+    _process_frame(
+        frame, frame,
+        detector=_make_ocr_detector(is_defect=False),
+        rejecter=rejecter,
+        data_manager=_FakeDataManager(),
+        config=_make_config_with_yolo_thresholds(collection_mode='auto'),
+    )
+
+    rejecter.push.assert_called_once()
+    _, kwargs = rejecter.push.call_args
+    assert kwargs.get('is_defect') is False, "OCR 정상은 리젝트 신호 없이 전달되어야 합니다"

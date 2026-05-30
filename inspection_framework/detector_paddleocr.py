@@ -167,6 +167,17 @@ class PaddleOcrDetector(BaseDetector):
         detections: List[DetectionResult] = []
 
         if not result or not result[0]:
+            # PaddleOCR이 결과를 전혀 반환하지 않은 경우
+            # change_date가 설정되어 있으면 텍스트 미인식 = 불량으로 처리
+            if self.change_date:
+                detections.append(DetectionResult(
+                    label=f"text:{self.class_name}",
+                    confidence=0.0,
+                    bbox_xyxy=[0, 0, 100, 100],
+                    is_defect=True,
+                    class_threshold=1.0,
+                    recognized_text="(no text found)",
+                ))
             return detections
 
         # PaddleOCR 3.x returns: [{ 'rec_texts': [...], 'rec_scores': [...],
@@ -210,13 +221,18 @@ class PaddleOcrDetector(BaseDetector):
         # Step 2: min_confidence 이상인 텍스트만 패턴 매칭에 사용
         pattern_found = False
         if self.change_date:
-            # 패턴과 텍스트 모두 공백 제거 후 비교
-            # (OCR이 공백을 다르게 인식할 수 있으므로)
-            pattern_normalized = self.change_date.replace(" ", "")
+            # 공백 제거 후 비교 (OCR이 공백을 다르게 인식할 수 있으므로)
+            # 점(.) 구분자를 유연하게 매칭:
+            #   - 패턴의 \. → [.,]? 로 치환: 점·쉼표·생략 모두 정상 처리
+            #   - 텍스트의 쉼표를 점으로 정규화 (OCR이 점을 쉼표로 오인식하는 경우 대비)
+            base_pattern = self.change_date.replace(" ", "")
+            # \.  (regex escaped dot)  또는  .  (일반 점) 모두 [.,]? 로 치환
+            # → 점 누락, 쉼표 오인식, 점 그대로 인식 — 세 경우 모두 정상 처리
+            flexible_pattern = re.sub(r'\\?\.', '[.,]?', base_pattern)
             for data in all_text_data:
                 if data["confidence"] >= self.min_confidence:
-                    text_normalized = data["text"].replace(" ", "")
-                    if re.search(pattern_normalized, text_normalized):
+                    text_normalized = data["text"].replace(" ", "").replace(",", ".")
+                    if re.search(flexible_pattern, text_normalized):
                         pattern_found = True
                         break
 
