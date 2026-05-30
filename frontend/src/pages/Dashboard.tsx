@@ -88,6 +88,7 @@ export default function Dashboard() {
   const [bulkLoading, setBulkLoading] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [layout, setLayout] = useState<LayoutItem[]>(loadSavedLayout)
+  const [preEditLayout, setPreEditLayout] = useState<LayoutItem[]>([])
   const [containerWidth, setContainerWidth] = useState(1200)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -319,6 +320,12 @@ export default function Dashboard() {
     })
   }, [saveLayoutToBackend])
 
+  const handleCancelEdit = () => {
+    setLayout(preEditLayout)
+    saveLayoutToBackend(preEditLayout)
+    setEditMode(false)
+  }
+
   const handleResetLayout = () => {
     setLayout(DEFAULT_LAYOUT)
     saveLayoutToBackend(DEFAULT_LAYOUT)
@@ -441,27 +448,36 @@ export default function Dashboard() {
 
           {/* Edit Layout 토글 — 진입 시만 관리자 인증 필요 */}
           <button
-            onClick={() => editMode ? setEditMode(false) : requireAdmin(() => setEditMode(true))}
+            onClick={() => editMode ? setEditMode(false) : requireAdmin(() => { setPreEditLayout(layout); setEditMode(true) })}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all border ${
               editMode
                 ? 'bg-blue-500/10 text-blue-400 border-blue-500/50 hover:bg-blue-500/15 hover:border-blue-500/70'
                 : 'bg-gray-800/30 text-gray-400 border-gray-600/50 hover:bg-gray-700/40 hover:border-gray-500/60 hover:text-gray-300'
             }`}
-            title={editMode ? 'Exit layout edit mode' : 'Enter layout edit mode'}
+            title={editMode ? 'Save and exit layout edit mode' : 'Enter layout edit mode'}
           >
             <LayoutGrid size={16} />
             {editMode ? 'Done' : 'Edit Layout'}
           </button>
 
-          {/* 편집 모드일 때 Reset 버튼 표시 */}
+          {/* 편집 모드일 때 Cancel / Reset 버튼 표시 */}
           {editMode && (
-            <button
-              onClick={handleResetLayout}
-              className="px-3 py-2.5 rounded-xl text-xs font-medium text-gray-500 border border-gray-700/50 hover:text-gray-300 hover:bg-gray-800/60 transition-all"
-              title="Reset to default layout"
-            >
-              Reset
-            </button>
+            <>
+              <button
+                onClick={handleCancelEdit}
+                className="px-3 py-2.5 rounded-xl text-xs font-medium text-gray-400 border border-gray-600/50 hover:text-white hover:bg-gray-700/60 transition-all"
+                title="Cancel and revert changes"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetLayout}
+                className="px-3 py-2.5 rounded-xl text-xs font-medium text-gray-500 border border-gray-700/50 hover:text-gray-300 hover:bg-gray-800/60 transition-all"
+                title="Reset to default layout"
+              >
+                Reset
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -470,7 +486,7 @@ export default function Dashboard() {
       {editMode && (
         <div className="mb-4 px-4 py-2.5 rounded-lg border border-blue-500/20 bg-blue-500/5 text-xs text-blue-300/80 flex items-center gap-2">
           <LayoutGrid size={13} className="shrink-0" />
-          Drag cards to reposition · Resize from the bottom-right corner · Click <strong className="text-blue-300">Done</strong> when finished
+          Drag cards to reposition · Resize from the bottom-right corner · <strong className="text-blue-300">Done</strong> to save · <strong className="text-gray-300">Cancel</strong> to revert
         </div>
       )}
 
