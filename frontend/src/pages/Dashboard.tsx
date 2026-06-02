@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Play, Square, LayoutGrid, Equal, LayoutDashboard } from 'lucide-react'
+import { Play, Square, LayoutGrid, Equal, LayoutDashboard, Layers } from 'lucide-react'
 import ReactGridLayout, { Layout, LayoutItem } from 'react-grid-layout'
 import { InspectionLine, InspectionConfig } from '../types'
 import CameraCard from '../components/CameraCard'
 import LineModal from '../components/LineModal'
+import SwitchProductAllModal from '../components/SwitchProductAllModal'
 import { useAuth } from '../contexts/AuthContext'
 import * as api from '../api'
 
@@ -86,6 +87,7 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState(new Date())
   const [modalLine, setModalLine] = useState<InspectionLine | undefined>(undefined)
   const [bulkLoading, setBulkLoading] = useState(false)
+  const [showSwitchProductModal, setShowSwitchProductModal] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [layout, setLayout] = useState<LayoutItem[]>(loadSavedLayout)
   const [preEditLayout, setPreEditLayout] = useState<LayoutItem[]>([])
@@ -300,6 +302,14 @@ export default function Dashboard() {
     }
   }
 
+  const handleSwitchProductAll = async (productName: string) => {
+    const affected = lines.filter(
+      l => l.config.enabled !== false && l.config.products && productName in l.config.products
+    )
+    await Promise.all(affected.map(l => api.switchProduct(l.config.line_name, productName)))
+    await loadLines()
+  }
+
   const handleLayoutChange = useCallback((newLayout: Layout) => {
     // editMode가 아닐 때 숨겨진 아이템은 grid에서 빠져있으므로,
     // 기존 layout에서 보이는 아이템만 업데이트하고 숨겨진 아이템은 유지
@@ -417,6 +427,16 @@ export default function Dashboard() {
           {/* 실행 중인 라인이 있으면 Stop All만, 없으면 Start All만 표시 */}
           {!editMode && (
             <>
+              {/* Switch Product All */}
+              <button
+                onClick={() => setShowSwitchProductModal(true)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all
+                  bg-gray-800/30 text-gray-400 border border-gray-600/50 hover:bg-gray-700/40 hover:border-gray-500/60 hover:text-gray-300"
+              >
+                <Layers size={15} />
+                Switch Product
+              </button>
+
               {enabledLines.some(l => l.stats.status === 'running' || l.stats.status === 'initializing') ? (
                 /* Stop All */
                 <button
@@ -558,6 +578,15 @@ export default function Dashboard() {
           line={modalLine}
           onClose={() => setModalLine(undefined)}
           onSave={handleModalSave}
+        />
+      )}
+
+      {/* Switch Product All modal */}
+      {showSwitchProductModal && (
+        <SwitchProductAllModal
+          lines={lines}
+          onClose={() => setShowSwitchProductModal(false)}
+          onApply={handleSwitchProductAll}
         />
       )}
     </div>

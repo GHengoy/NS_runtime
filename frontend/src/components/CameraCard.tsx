@@ -23,8 +23,20 @@ const displayFormat = (regexStr: string): string => {
 /** 화면 표시: "2026.06.03" → 파일 형식 (정규식): "2026\\.06\\.03" */
 const regexFormat = (displayStr: string): string => {
   if (!displayStr) return ''
-  // . 을 \\ 로 변환 (마크다운 이스케이프 추가)
   return displayStr.replace(/\./g, '\\.')
+}
+
+/** ISO 날짜(YYYY-MM-DD) + 포맷 → 표시 문자열 */
+function buildDateDisplay(iso: string, fmt: string): string {
+  if (!iso) return ''
+  const [year, month, day] = iso.split('-')
+  if (!year || !month || !day) return ''
+  return fmt.replace('YYYY', year).replace('YY', year.slice(2)).replace('MM', month).replace('DD', day)
+}
+
+/** 표시 문자열 → 정규식 */
+function displayToRegex(formatted: string): string {
+  return formatted.replace(/\./g, '\\.').replace(/\//g, '\\/')
 }
 
 interface Props {
@@ -58,6 +70,7 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
   })
   const [showProductDropdown, setShowProductDropdown] = useState(false)
   const [showThresholdPanel, setShowThresholdPanel] = useState(false)
+  const [panelSnapshot, setPanelSnapshot] = useState<{ ocrConfig: Record<string,any>; date: string } | null>(null)
 
   // 로컬 임계값 상태 (낙관적 업데이트용)
   const activeProductConfig = config.products?.[config.active_product ?? '']
@@ -204,6 +217,43 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
       setEditingChangeDate(newDisplayFormat)
     }
   }, [ocrConfig.change_date])
+
+  const navigateDate = (direction: 1 | -1) => {
+    // 현재 표시된 날짜가 없으면 아무것도 안 함
+    if (!editingChangeDate) return
+
+    const fmt = (ocrConfig.date_format as string | undefined) ?? 'YYYY.MM.DD'
+
+    // editingChangeDate → ISO(YYYY-MM-DD) 역파싱
+    const sep = fmt.includes('/') ? '/' : fmt.includes('.') ? '.' : null
+    const dispParts = sep ? editingChangeDate.split(sep) : null
+    const fmtParts  = sep ? fmt.split(sep) : null
+    let isoDate = ''
+    if (dispParts && fmtParts && dispParts.length === 3 && fmtParts.length === 3) {
+      let y = '', m = '', d = ''
+      fmtParts.forEach((f, i) => {
+        if (f === 'YYYY') y = dispParts[i]
+        else if (f === 'YY') y = '20' + dispParts[i]
+        else if (f === 'MM') m = dispParts[i]
+        else if (f === 'DD') d = dispParts[i]
+      })
+      if (y && m && d) isoDate = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`
+    }
+
+    // 파싱 실패 시 중단
+    if (!isoDate) return
+
+    const date = new Date(isoDate + 'T00:00:00')
+    if (isNaN(date.getTime())) return
+    date.setDate(date.getDate() + direction)
+
+    const newIso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    const formatted = buildDateDisplay(newIso, fmt)
+    const newOcrConfig = { ...ocrConfig, date_value: newIso, change_date: displayToRegex(formatted) }
+    setOcrConfig(newOcrConfig)
+    setEditingChangeDate(formatted)
+    // 화살표는 미리보기만 — Enter 또는 blur 시 저장
+  }
 
   const [rejectFlash, setRejectFlash] = useState(false)
 
@@ -674,7 +724,10 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
               <StatusBadge status={stats.status} />
               {/* Threshold/Change Date 버튼 */}
               <button
-                onClick={() => setShowThresholdPanel(true)}
+                onClick={() => {
+                  setPanelSnapshot({ ocrConfig: { ...ocrConfig }, date: editingChangeDate })
+                  setShowThresholdPanel(true)
+                }}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-colors border text-amber-500/80 hover:text-amber-400 hover:bg-amber-500/10 border-amber-500/25 hover:border-amber-500/50"
                 title={activeProductConfig?.detector_type === 'paddleocr' ? 'Change Date Pattern' : 'Adjust Thresholds'}
               >
@@ -768,7 +821,13 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
                 {activeProductConfig?.detector_type === 'paddleocr' ? 'Date Patterns' : 'Reject Thresholds'}
               </h2>
               <button
-                onClick={() => setShowThresholdPanel(false)}
+                onClick={() => {
+                  if (panelSnapshot) {
+                    setOcrConfig(panelSnapshot.ocrConfig)
+                    setEditingChangeDate(panelSnapshot.date)
+                  }
+                  setShowThresholdPanel(false)
+                }}
                 className="text-gray-500 hover:text-gray-300 transition-colors"
               >
                 <X size={20} />
@@ -780,52 +839,49 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
               <div className="space-y-3 mb-6">
                 {/* Change Date Pattern */}
                 <div className="flex flex-col gap-1.5 p-3 bg-black/40 rounded-lg border border-gray-700/50">
-                  <label className="text-xs text-gray-400 font-medium">
-                    Date Pattern (Regex)
-                  </label>
-                  <input
-                    type="text"
-                    value={editingChangeDate}
-                    onChange={e => setEditingChangeDate(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        // 입력값을 정규식 형식으로 변환해서 저장
+                  <label className="text-xs text-gray-400 font-medium">Date Pattern</label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => navigateDate(-1)}
+                      className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors shrink-0"
+                      title="Previous day"
+                    >
+                      <ChevronLeft size={15} />
+                    </button>
+                    <input
+                      type="text"
+                      value={editingChangeDate}
+                      onChange={e => setEditingChangeDate(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Escape') {
+                          if (panelSnapshot) {
+                            setOcrConfig(panelSnapshot.ocrConfig)
+                            setEditingChangeDate(panelSnapshot.date)
+                          }
+                          e.currentTarget.blur()
+                        }
+                      }}
+                      onBlur={() => {
+                        // blur 시 change_date 로컬 반영만 (저장은 Save 버튼)
                         const regexValue = regexFormat(editingChangeDate)
-                        const newOcrConfig = { ...ocrConfig, change_date: regexValue }
-                        setOcrConfig(newOcrConfig)
-                        // 즉시 백엔드에 저장
-                        if (config.active_product) {
-                          onUpdateDetectorConfig?.(
-                            config.line_name,
-                            config.active_product,
-                            newOcrConfig
-                          )
+                        if (regexValue !== ocrConfig.change_date) {
+                          setOcrConfig(prev => ({ ...prev, change_date: regexValue }))
                         }
-                        e.currentTarget.blur()
-                      }
-                    }}
-                    onBlur={() => {
-                      // 입력값을 정규식 형식으로 변환해서 저장
-                      const regexValue = regexFormat(editingChangeDate)
-                      if (regexValue !== ocrConfig.change_date) {
-                        const newOcrConfig = { ...ocrConfig, change_date: regexValue }
-                        setOcrConfig(newOcrConfig)
-                        // 즉시 백엔드에 저장
-                        if (config.active_product) {
-                          onUpdateDetectorConfig?.(
-                            config.line_name,
-                            config.active_product,
-                            newOcrConfig
-                          )
-                        }
-                      }
-                    }}
-                    placeholder="e.g., 2026.02.28"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-colors"
-                  />
-                  <p className="text-xs text-gray-500">
-                    Simple format: 2026.02.28 (dots are auto-escaped in JSON)
-                  </p>
+                      }}
+                      placeholder="e.g., 2026.02.28"
+                      className="flex-1 min-w-0 px-2 py-2 bg-gray-800 border border-gray-600 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-colors text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => navigateDate(1)}
+                      className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors shrink-0"
+                      title="Next day"
+                    >
+                      <ChevronRight size={15} />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500">‹ › to navigate · Save to apply · Cancel/X to revert</p>
                 </div>
 
                 {/* Use Angle Detection */}
@@ -1014,7 +1070,13 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
                   Save
                 </button>
                 <button
-                  onClick={() => setShowThresholdPanel(false)}
+                  onClick={() => {
+                    if (panelSnapshot) {
+                      setOcrConfig(panelSnapshot.ocrConfig)
+                      setEditingChangeDate(panelSnapshot.date)
+                    }
+                    setShowThresholdPanel(false)
+                  }}
                   className="flex-1 py-2.5 rounded-lg bg-gray-700/30 text-gray-400 hover:bg-gray-700/50 transition-colors font-semibold text-sm border border-gray-600/30"
                 >
                   Cancel
@@ -1046,6 +1108,7 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
                 </button>
               </div>
             )}
+
           </div>
         </div>,
         document.body

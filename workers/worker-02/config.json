@@ -9,7 +9,7 @@
   "reject_pulse_count": null,
   "trigger_delay_sec": null,
   "trigger_debounce_sec": null,
-  "active_product": "yolo",
+  "active_product": "OCR",
   "products": {
     "Default": {
       "rotation": "NONE",
@@ -572,7 +572,8 @@
         "use_angle_cls": true,
         "det_limit_side_len": 480,
         "rec_batch_num": 10,
-        "min_confidence": 0.77
+        "min_confidence": 0.77,
+        "date_value": "2026-01-01"
       },
       "show_threshold": 0.3,
       "data_yaml": "../weights/coco.yaml",

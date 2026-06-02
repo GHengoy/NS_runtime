@@ -9,7 +9,7 @@
   "reject_pulse_count": null,
   "trigger_delay_sec": null,
   "trigger_debounce_sec": null,
-  "active_product": "일부인",
+  "active_product": "OCR",
   "products": {
     "Default": {
       "rotation": "NONE",

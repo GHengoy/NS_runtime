@@ -21,7 +21,7 @@ sleep 1
 # ── 1) FastAPI backend ────────────────────────────────────
 echo "[1/2] Starting FastAPI backend (port 8000)..."
 cd "$ROOT_DIR"
-uv run uvicorn backend.main:app --host 0.0.0.0 --port 8000 --no-access-log &
+uv run python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --no-access-log &
 BACKEND_PID=$!
 
 # ── 2) React frontend ─────────────────────────────────────

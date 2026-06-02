@@ -109,6 +109,8 @@ class PaddleOcrDetector(BaseDetector):
         self.change_date = dc.get("change_date")  # 검사할 날짜 패턴 (정규식)
         self.class_name = dc.get("class_name", "date_check")  # 저장 폴더명 (고정)
         self.min_confidence = float(dc.get("min_confidence", 0.0))  # 패턴 매칭 최소 신뢰도
+        self.required_texts = [t.strip() for t in dc.get("required_texts", []) if t and t.strip()]
+        self.required_texts_mode = dc.get("required_texts_mode", "and")  # "and" | "or"
         lang = dc.get("lang", "en")
 
         # PaddleOCR constructor parameters
@@ -151,7 +153,7 @@ class PaddleOcrDetector(BaseDetector):
         if dc.get("text_detection_model_dir"):
             ocr_kwargs["det_model_dir"] = dc["text_detection_model_dir"]
 
-        print(f"[Detector:PaddleOCR] Initializing (lang={lang}, change_date={self.change_date}, class_name={self.class_name})")
+        print(f"[Detector:PaddleOCR] Initializing (lang={lang}, change_date={self.change_date}, required_texts={self.required_texts}, class_name={self.class_name})")
         print(f"[Detector:PaddleOCR]   det_limit_side_len={ocr_kwargs.get('det_limit_side_len', 960)} | rec_batch_num={ocr_kwargs.get('rec_batch_num', 6)} | use_angle_cls={ocr_kwargs.get('use_angle_cls', True)}")
         import logging as _logging
         _logging.getLogger("ppocr").setLevel(_logging.WARNING)
@@ -168,8 +170,8 @@ class PaddleOcrDetector(BaseDetector):
 
         if not result or not result[0]:
             # PaddleOCR이 결과를 전혀 반환하지 않은 경우
-            # change_date가 설정되어 있으면 텍스트 미인식 = 불량으로 처리
-            if self.change_date:
+            # 패턴 검사가 설정되어 있으면 텍스트 미인식 = 불량으로 처리
+            if self.change_date or self.required_texts:
                 detections.append(DetectionResult(
                     label=f"text:{self.class_name}",
                     confidence=0.0,
@@ -219,25 +221,37 @@ class PaddleOcrDetector(BaseDetector):
                 })
 
         # Step 2: min_confidence 이상인 텍스트만 패턴 매칭에 사용
-        pattern_found = False
+        # 2-a: 날짜 패턴 검사
+        date_ok = True
         if self.change_date:
-            # 공백 제거 후 비교 (OCR이 공백을 다르게 인식할 수 있으므로)
             # 점(.) 구분자를 유연하게 매칭:
             #   - 패턴의 \. → [.,]? 로 치환: 점·쉼표·생략 모두 정상 처리
-            #   - 텍스트의 쉼표를 점으로 정규화 (OCR이 점을 쉼표로 오인식하는 경우 대비)
             base_pattern = self.change_date.replace(" ", "")
-            # \.  (regex escaped dot)  또는  .  (일반 점) 모두 [.,]? 로 치환
-            # → 점 누락, 쉼표 오인식, 점 그대로 인식 — 세 경우 모두 정상 처리
             flexible_pattern = re.sub(r'\\?\.', '[.,]?', base_pattern)
+            date_ok = False
             for data in all_text_data:
                 if data["confidence"] >= self.min_confidence:
                     text_normalized = data["text"].replace(" ", "").replace(",", ".")
                     if re.search(flexible_pattern, text_normalized):
-                        pattern_found = True
+                        date_ok = True
                         break
 
-        # Step 3: 최종 불량 판정 (패턴 존재 유무만으로)
-        is_defect = not pattern_found if self.change_date else False
+        # 2-b: 필수 텍스트 검사 (AND: 모두 존재 / OR: 하나 이상 존재)
+        texts_ok = True
+        if self.required_texts:
+            def _text_found(req: str) -> bool:
+                return any(
+                    req in data["text"] and data["confidence"] >= self.min_confidence
+                    for data in all_text_data
+                )
+            if self.required_texts_mode == "or":
+                texts_ok = any(_text_found(t) for t in self.required_texts)
+            else:
+                texts_ok = all(_text_found(t) for t in self.required_texts)
+
+        # Step 3: 최종 불량 판정
+        has_check = bool(self.change_date or self.required_texts)
+        is_defect = not (date_ok and texts_ok) if has_check else False
 
         # Step 3: 모든 인식된 텍스트마다 DetectionResult 생성 (시각화용)
         #         단, label은 모두 self.class_name으로 통일
@@ -251,10 +265,8 @@ class PaddleOcrDetector(BaseDetector):
                 recognized_text=data["text"],     # OCR 인식 텍스트
             ))
 
-        # Step 4: 텍스트를 못 인식했는데 패턴을 찾고 있으면 → 불량 반환
-        #         (all_text_data가 비어있으면 DetectionResult가 없어서
-        #          has_defect([])가 False가 되는 문제 방지)
-        if not all_text_data and self.change_date:
+        # Step 4: 텍스트를 못 인식했는데 패턴 검사가 있으면 → 불량 반환
+        if not all_text_data and has_check:
             detections.append(DetectionResult(
                 label=f"text:{self.class_name}",
                 confidence=0.0,

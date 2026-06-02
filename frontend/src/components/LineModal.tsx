@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { X, Save, Upload, Wifi, Monitor, RefreshCw, Check, ChevronDown, ChevronRight, FolderOpen, Folder, FileText, ArrowLeft, Camera } from 'lucide-react'
 import { InspectionLine, InspectionConfig, ProductConfig, RotationType, DeviceType, CameraType, DetectorType, GpuInfo } from '../types'
 import * as api from '../api'
@@ -116,19 +117,113 @@ function FileBrowser({ extensions, onSelect, onClose, initialPath, folderOnly }:
   )
 }
 
-// ── 정규식 ↔ 화면 표시 변환 ───────────────────────────────────────────────
-/** 파일 형식 (정규식): "2011\\.11\\.11" → 화면 표시: "2011.11.11" */
-const displayFormat = (regexStr: string): string => {
-  if (!regexStr) return ''
-  // \\ 을 . 로 변환 (마크다운 이스케이프 표시 제거)
-  return regexStr.replace(/\\\./g, '.')
+// ── OCR Day Calendar Picker ───────────────────────────────────────────────
+function OcrDayPicker({ yr, mo, dy, onSelect }: {
+  yr: string; mo: string; dy: string; onSelect: (d: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const calRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (!calRef.current?.contains(e.target as Node) && !btnRef.current?.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const handleOpen = () => {
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      const calH = 230
+      const top = rect.bottom + 4 + calH > window.innerHeight
+        ? rect.top - calH - 4
+        : rect.bottom + 4
+      setPos({ top, left: rect.left + rect.width / 2 })
+    }
+    setOpen(v => !v)
+  }
+
+  const daysInMonth = yr && mo ? new Date(parseInt(yr), parseInt(mo), 0).getDate() : 31
+  const firstDow   = yr && mo ? new Date(parseInt(yr), parseInt(mo) - 1, 1).getDay() : 0
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={handleOpen}
+        className={`w-[48px] bg-gray-800 border rounded-lg px-1 py-2 text-xs text-white text-center transition-colors ${
+          open ? 'border-blue-500' : 'border-gray-700 hover:border-blue-500/50'
+        }`}
+      >
+        {dy || 'DD'}
+      </button>
+      {open && createPortal(
+        <div
+          ref={calRef}
+          className="fixed z-[99999] bg-gray-800 border border-gray-600 rounded-xl p-3 shadow-2xl"
+          style={{ top: pos.top, left: pos.left, transform: 'translateX(-50%)', width: '196px' }}
+        >
+          {yr && mo && (
+            <p className="text-[10px] text-gray-500 text-center mb-2 font-medium">{yr} / {mo}</p>
+          )}
+          <div className="grid grid-cols-7 mb-1">
+            {['S','M','T','W','T','F','S'].map((d, i) => (
+              <div key={i} className="text-center text-[9px] text-gray-600 py-0.5 font-medium">{d}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-0.5">
+            {Array.from({ length: firstDow }, (_, i) => <div key={`e${i}`} />)}
+            {Array.from({ length: daysInMonth }, (_, i) => {
+              const dayNum = String(i + 1).padStart(2, '0')
+              return (
+                <button
+                  key={dayNum}
+                  type="button"
+                  onClick={() => { onSelect(dayNum); setOpen(false) }}
+                  className={`text-xs py-1.5 rounded transition-colors ${
+                    dy === dayNum
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'text-gray-300 hover:bg-blue-500/25 hover:text-white'
+                  }`}
+                >
+                  {i + 1}
+                </button>
+              )
+            })}
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  )
 }
 
-/** 화면 표시: "2011.11.11" → 파일 형식 (정규식): "2011\\.11\\.11" */
-const regexFormat = (displayStr: string): string => {
-  if (!displayStr) return ''
-  // . 을 \\ 로 변환 (마크다운 이스케이프 추가)
-  return displayStr.replace(/\./g, '\\.')
+// ── OCR Date Pattern 헬퍼 ─────────────────────────────────────────────────
+const DATE_FORMATS = ['YYYY.MM.DD', 'YY.MM.DD', 'DD.MM.YYYY', 'YYYY/MM/DD', 'YY/MM/DD', 'DD/MM/YYYY', 'YYYYMMDD'] as const
+type DateFmt = typeof DATE_FORMATS[number]
+
+/** ISO 날짜(YYYY-MM-DD) + 포맷 → 표시 문자열 */
+function buildDatePattern(iso: string, fmt: string): string {
+  if (!iso) return ''
+  const [year, month, day] = iso.split('-')
+  if (!year || !month || !day) return ''
+  return fmt
+    .replace('YYYY', year)
+    .replace('YY', year.slice(2))
+    .replace('MM', month)
+    .replace('DD', day)
+}
+
+/** 표시 문자열 → 정규식 (점·슬래시 이스케이프) */
+function dateToRegex(formatted: string): string {
+  return formatted.replace(/\./g, '\\.').replace(/\//g, '\\/')
 }
 
 export const defaultConfig: InspectionConfig = {
@@ -499,6 +594,12 @@ export default function LineModal({
     setCfg(prev => ({
       ...prev,
       detector_config: { ...(prev.detector_config ?? {}), [key]: val },
+    }))
+
+  const setDetectorConfigs = (updates: Record<string, unknown>) =>
+    setCfg(prev => ({
+      ...prev,
+      detector_config: { ...(prev.detector_config ?? {}), ...updates },
     }))
 
   const handleDetectorTypeChange = (type: DetectorType) => {
@@ -1395,18 +1496,185 @@ export default function LineModal({
                       />
                     </label>
                   </div>
-                  <label className="block">
-                    <span className="text-xs text-gray-400 mb-1 block">Change Date Pattern</span>
-                    <input
-                      value={displayFormat(cfg.detector_config?.change_date ?? '')}
-                      onChange={e => setDetectorConfig('change_date', regexFormat(e.target.value))}
-                      placeholder="e.g. 2011.11.11"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                    />
-                  </label>
-                  <p className="text-xs text-gray-600 mb-3">
-                    ✅ If the date pattern is <strong>found</strong> → Normal (signal OFF)<br/>
-                    ❌ If the date pattern is <strong>NOT found</strong> → Defect (signal ON)
+                  {/* Date Pattern */}
+                  <div className="space-y-2">
+                    <span className="text-xs text-gray-400 block">Date Pattern</span>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {/* Format dropdown */}
+                      {(() => {
+                        const storedFmt = (cfg.detector_config?.date_format ?? 'YYYY.MM.DD') as string
+                        const isCustom = !(DATE_FORMATS as readonly string[]).includes(storedFmt)
+                        const customInputVal = isCustom && storedFmt !== 'custom' ? storedFmt : ''
+                        return (
+                          <label className="block">
+                            <span className="text-xs text-gray-500 mb-1 block">Format</span>
+                            <select
+                              value={isCustom ? 'custom' : storedFmt}
+                              onChange={e => {
+                                if (e.target.value === 'custom') {
+                                  setDetectorConfigs({ date_format: 'custom' })
+                                } else {
+                                  const fmt = e.target.value
+                                  const dateVal = cfg.detector_config?.date_value ?? ''
+                                  const formatted = buildDatePattern(dateVal, fmt)
+                                  setDetectorConfigs({
+                                    date_format: fmt,
+                                    ...(formatted ? { change_date: dateToRegex(formatted) } : {}),
+                                  })
+                                }
+                              }}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                            >
+                              {DATE_FORMATS.map(f => <option key={f} value={f}>{f}</option>)}
+                              <option value="custom">Custom…</option>
+                            </select>
+                            {isCustom && (
+                              <input
+                                type="text"
+                                value={customInputVal}
+                                onChange={e => {
+                                  const fmt = e.target.value
+                                  const dateVal = cfg.detector_config?.date_value ?? ''
+                                  const formatted = buildDatePattern(dateVal, fmt)
+                                  setDetectorConfigs({
+                                    date_format: fmt || 'custom',
+                                    ...(fmt && formatted ? { change_date: dateToRegex(formatted) } : {}),
+                                  })
+                                }}
+                                placeholder="e.g. YYYY년 MM월 DD일"
+                                autoFocus
+                                className="mt-1.5 w-full bg-gray-800 border border-blue-500/40 rounded-lg px-2 py-1.5 text-xs text-white placeholder-gray-700 focus:outline-none focus:border-blue-500 font-mono"
+                              />
+                            )}
+                          </label>
+                        )
+                      })()}
+
+                      {/* Date picker — 3 separate selects (locale-safe) */}
+                      {(() => {
+                        const parts = (cfg.detector_config?.date_value ?? '').split('-')
+                        const yr = parts[0] ?? '', mo = parts[1] ?? '', dy = parts[2] ?? ''
+                        const commit = (y: string, m: string, d: string) => {
+                          const iso = y && m && d ? `${y}-${m}-${d}` : ''
+                          const fmt = (cfg.detector_config?.date_format ?? 'YYYY.MM.DD') as string
+                          const formatted = iso ? buildDatePattern(iso, fmt) : ''
+                          setDetectorConfigs({ date_value: iso, change_date: formatted ? dateToRegex(formatted) : '' })
+                        }
+                        const selCls = 'bg-gray-800 border border-gray-700 rounded-lg px-1 py-2 text-xs text-white focus:outline-none focus:border-blue-500'
+                        return (
+                          <label className="block">
+                            <span className="text-xs text-gray-500 mb-1 block">Date</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number" min={2000} max={2099}
+                                value={yr}
+                                onChange={e => commit(e.target.value, mo, dy)}
+                                placeholder="YYYY"
+                                className={`w-[60px] px-1.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-white placeholder-gray-700 focus:outline-none focus:border-blue-500 font-mono [appearance:textfield]`}
+                              />
+                              <span className="text-gray-700 text-xs">/</span>
+                              <select value={mo} onChange={e => commit(yr, e.target.value, dy)} className={`w-[48px] ${selCls}`}>
+                                <option value="">MM</option>
+                                {Array.from({length:12},(_,i)=>String(i+1).padStart(2,'0')).map(v=><option key={v} value={v}>{v}</option>)}
+                              </select>
+                              <span className="text-gray-700 text-xs">/</span>
+                              <OcrDayPicker
+                                yr={yr} mo={mo} dy={dy}
+                                onSelect={d => commit(yr, mo, d)}
+                              />
+                            </div>
+                          </label>
+                        )
+                      })()}
+                    </div>
+
+                    {/* Formatted preview */}
+                    {cfg.detector_config?.date_value && (
+                      <div className="text-xs font-mono text-gray-500 bg-gray-800/50 px-2.5 py-1.5 rounded-lg">
+                        {buildDatePattern(
+                          cfg.detector_config.date_value,
+                          (cfg.detector_config?.date_format ?? 'YYYY.MM.DD') as string
+                        )}
+                      </div>
+                    )}
+
+                    {/* Required text fields — dynamic list */}
+                    {(() => {
+                      const reqTexts: string[] = Array.isArray(cfg.detector_config?.required_texts) && (cfg.detector_config!.required_texts as string[]).length > 0
+                        ? cfg.detector_config!.required_texts as string[]
+                        : ['']
+                      return (
+                        <div className="space-y-1.5 pt-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">Required Text</span>
+                            <div className="flex items-center gap-2">
+                              {/* AND / OR toggle */}
+                              <div className="flex rounded-md overflow-hidden border border-gray-700 text-[10px] font-semibold">
+                                {(['and', 'or'] as const).map(mode => {
+                                  const active = (cfg.detector_config?.required_texts_mode ?? 'and') === mode
+                                  return (
+                                    <button
+                                      key={mode}
+                                      type="button"
+                                      onClick={() => setDetectorConfig('required_texts_mode', mode)}
+                                      className={`px-2 py-1 transition-colors ${
+                                        active
+                                          ? 'bg-blue-600 text-white'
+                                          : 'bg-gray-800 text-gray-500 hover:text-gray-300'
+                                      }`}
+                                    >
+                                      {mode.toUpperCase()}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setDetectorConfig('required_texts', [...reqTexts, ''])}
+                                className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                              >
+                                + Add
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-gray-700">
+                            {(cfg.detector_config?.required_texts_mode ?? 'and') === 'and'
+                              ? 'AND — all texts must appear'
+                              : 'OR — at least one text must appear'}
+                          </p>
+                          {reqTexts.map((text, i) => (
+                            <div key={i} className="flex gap-1.5 items-center">
+                              <input
+                                type="text"
+                                value={text}
+                                onChange={e => {
+                                  const next = [...reqTexts]
+                                  next[i] = e.target.value
+                                  setDetectorConfig('required_texts', next)
+                                }}
+                                placeholder="e.g. 까지, 서울, 유통기한"
+                                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-700 focus:outline-none focus:border-blue-500"
+                              />
+                              {reqTexts.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDetectorConfig('required_texts', reqTexts.filter((_, j) => j !== i))}
+                                  className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                                >
+                                  <X size={14} />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+                  </div>
+
+                  <p className="text-xs text-gray-600">
+                    ✅ Date + required texts <strong>found</strong> → Normal<br/>
+                    ❌ <strong>Not found</strong> → Defect <span className="text-gray-700">(empty fields ignored)</span>
                   </p>
 
                   {/* Advanced Performance Tuning */}
