@@ -9,7 +9,7 @@ export interface GpuInfo {
 }
 export type WorkerStatus = 'running' | 'stopped' | 'error' | 'initializing'
 export type CameraType = 'basler' | 'webcam'
-export type DetectorType = 'yolo' | 'paddleocr' | 'cnn'
+export type DetectorType = 'yolo' | 'paddleocr' | 'paddlert' | 'cnn'
 
 export interface ProductConfig {
   rotation: RotationType

@@ -79,7 +79,7 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
 
   // Defect gallery state
   // OCR mode defaults to showing the gallery; other modes require explicit opt-in
-  const isOcrMode = activeProductConfig?.detector_type === 'paddleocr'
+  const isOcrMode = ['paddleocr', 'paddlert'].includes(activeProductConfig?.detector_type ?? '')
   const showGallery = !!(activeProductConfig?.show_defect_gallery ?? isOcrMode)
   const showGalleryRef = useRef(showGallery)
   useEffect(() => { showGalleryRef.current = showGallery }, [showGallery])
@@ -729,10 +729,10 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
                   setShowThresholdPanel(true)
                 }}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold transition-colors border text-amber-500/80 hover:text-amber-400 hover:bg-amber-500/10 border-amber-500/25 hover:border-amber-500/50"
-                title={activeProductConfig?.detector_type === 'paddleocr' ? 'Change Date Pattern' : 'Adjust Thresholds'}
+                title={['paddleocr', 'paddlert'].includes(activeProductConfig?.detector_type ?? '') ? 'Change Date Pattern' : 'Adjust Thresholds'}
               >
                 <Settings size={11} />
-                {activeProductConfig?.detector_type === 'paddleocr' ? 'Date' : 'Threshold'}
+                {['paddleocr', 'paddlert'].includes(activeProductConfig?.detector_type ?? '') ? 'Date' : 'Threshold'}
               </button>
             </div>
             <div className="flex items-center gap-2">
@@ -812,13 +812,13 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
       </div>
 
       {/* 임계값/날짜 조절 패널 모달 — Portal로 body에 렌더링하여 z-index 문제 방지 */}
-      {showThresholdPanel && (activeProductConfig?.detector_type === 'paddleocr' || Object.keys(localThresholds).length > 0) && createPortal(
+      {showThresholdPanel && (isOcrMode || Object.keys(localThresholds).length > 0) && createPortal(
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]">
           <div className="bg-gray-900 border border-amber-500/50 rounded-xl p-6 max-w-sm w-full mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             {/* 헤더 */}
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold text-amber-100">
-                {activeProductConfig?.detector_type === 'paddleocr' ? 'Date Patterns' : 'Reject Thresholds'}
+                {['paddleocr', 'paddlert'].includes(activeProductConfig?.detector_type ?? '') ? 'Date Patterns' : 'Reject Thresholds'}
               </h2>
               <button
                 onClick={() => {
@@ -835,7 +835,7 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
             </div>
 
             {/* PaddleOCR 모드: detector_config 편집 */}
-            {activeProductConfig?.detector_type === 'paddleocr' ? (
+            {isOcrMode ? (
               <div className="space-y-3 mb-6">
                 {/* Change Date Pattern */}
                 <div className="flex flex-col gap-1.5 p-3 bg-black/40 rounded-lg border border-gray-700/50">
@@ -1045,7 +1045,7 @@ function CameraCard({ line, onToggle, onSettings, onSwitchProduct, onUpdateThres
             </div>
 
             {/* 저장/닫기 버튼 */}
-            {activeProductConfig?.detector_type === 'paddleocr' ? (
+            {isOcrMode ? (
               <div className="flex gap-2">
                 <button
                   onClick={() => {

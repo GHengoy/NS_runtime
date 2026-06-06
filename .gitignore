@@ -50,3 +50,9 @@ workers/*/*.pfs
 # Note: workers/*/config.json and configs/lines.json are now tracked
 configs/lines.json
 memory.md
+
+# Claude Code memory (local only)
+.claude/
+
+# ONNX export models (generated per machine, run tools/export_onnx.sh)
+onnx_export/

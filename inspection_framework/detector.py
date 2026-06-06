@@ -172,6 +172,7 @@ class BaseDetector(ABC):
 _BUILTIN_MODULES = {
     "yolo":       "detector_yolo",
     "paddleocr":  "detector_paddleocr",
+    "paddlert":   "detector_paddlert",
     "cnn":        "detector_cnn",
 }
 

@@ -604,18 +604,32 @@ export default function LineModal({
 
   const handleDetectorTypeChange = (type: DetectorType) => {
     if ((cfg.detector_type ?? 'yolo') === type) return
+    const OCR_TYPES = ['paddleocr']
+    const isCurrentOcr = OCR_TYPES.includes(cfg.detector_type ?? 'yolo')
+    const isTargetOcr  = OCR_TYPES.includes(type)
     const defaults: Record<string, { model_path: string; config: Record<string, unknown> | null }> = {
-      yolo:      { model_path: './weights/best.pt',        config: null },
-      paddleocr: { model_path: '',                         config: { lang: 'en', change_date: '', class_name: 'date_check', use_gpu: true } },
+      yolo:      { model_path: './weights/best.pt', config: null },
+      paddleocr: { model_path: '', config: { lang: 'en',   change_date: '', class_name: 'date_check', use_gpu: true } },
     }
     const d = defaults[type] ?? defaults.yolo
-    setCfg(prev => ({ ...prev, detector_type: type, model_path: d.model_path, detector_config: d.config }))
-    if (type === 'paddleocr') {
-      // OCR: YOLO thresholds 제거 (OCR은 패턴 매칭 방식, threshold 불필요)
+    // OCR → OCR 전환 시 날짜·텍스트 설정 유지
+    const nextConfig = (isCurrentOcr && isTargetOcr && cfg.detector_config)
+      ? {
+          ...d.config,
+          change_date:          cfg.detector_config.change_date,
+          date_value:           cfg.detector_config.date_value,
+          date_format:          cfg.detector_config.date_format,
+          class_name:           cfg.detector_config.class_name,
+          min_confidence:       cfg.detector_config.min_confidence,
+          required_texts:       cfg.detector_config.required_texts,
+          required_texts_mode:  cfg.detector_config.required_texts_mode,
+        }
+      : d.config
+    setCfg(prev => ({ ...prev, detector_type: type, model_path: d.model_path, detector_config: nextConfig }))
+    if (isTargetOcr) {
       setThresholds([])
       setSaveThresholds([])
     }
-    // YOLO: 기존 thresholds 유지 (YAML 새로고침 시에만 변경)
   }
 
   // ── YAML file parsing for class names ─────────────────────────
@@ -1297,7 +1311,7 @@ export default function LineModal({
                 <span className="text-xs text-gray-400 mb-2 block">Detector Type</span>
                 <div className="grid grid-cols-2 gap-2">
                   {([
-                    { value: 'yolo' as DetectorType, title: 'YOLO', desc: 'Object detection' },
+                    { value: 'yolo'      as DetectorType, title: 'YOLO',      desc: 'Object detection' },
                     { value: 'paddleocr' as DetectorType, title: 'PaddleOCR', desc: 'Text recognition' },
                   ]).map(({ value, title, desc }) => {
                     const active = (cfg.detector_type ?? 'yolo') === value
@@ -1321,8 +1335,8 @@ export default function LineModal({
                   })}
                 </div>
               </div>
-              {/* Weights / Model Path with Browse — OCR에서는 숨김 */}
-              {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
+              {/* Weights / Model Path — paddleocr는 숨김 */}
+              {!['paddleocr'].includes(cfg.detector_type ?? 'yolo') && (
                 <div className="relative">
                   <span className="text-xs text-gray-400 mb-1 block">Weights File Path</span>
                   <div className="flex gap-1">
@@ -1330,8 +1344,7 @@ export default function LineModal({
                       value={cfg.model_path}
                       onChange={e => set('model_path', e.target.value)}
                       placeholder={
-                        (cfg.detector_type ?? 'yolo') === 'cnn' ? './weights/classifier.pth' :
-                        './weights/best.pt'
+                        (cfg.detector_type ?? 'yolo') === 'cnn' ? './weights/classifier.pth' : './weights/best.pt'
                       }
                       className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
                     />
@@ -1556,9 +1569,9 @@ export default function LineModal({
                         const parts = (cfg.detector_config?.date_value ?? '').split('-')
                         const yr = parts[0] ?? '', mo = parts[1] ?? '', dy = parts[2] ?? ''
                         const commit = (y: string, m: string, d: string) => {
-                          const iso = y && m && d ? `${y}-${m}-${d}` : ''
+                          const iso = `${y}-${m}-${d}`
                           const fmt = (cfg.detector_config?.date_format ?? 'YYYY.MM.DD') as string
-                          const formatted = iso ? buildDatePattern(iso, fmt) : ''
+                          const formatted = (y && m && d) ? buildDatePattern(iso, fmt) : ''
                           setDetectorConfigs({ date_value: iso, change_date: formatted ? dateToRegex(formatted) : '' })
                         }
                         const selCls = 'bg-gray-800 border border-gray-700 rounded-lg px-1 py-2 text-xs text-white focus:outline-none focus:border-blue-500'
@@ -1566,13 +1579,10 @@ export default function LineModal({
                           <label className="block">
                             <span className="text-xs text-gray-500 mb-1 block">Date</span>
                             <div className="flex items-center gap-1">
-                              <input
-                                type="number" min={2000} max={2099}
-                                value={yr}
-                                onChange={e => commit(e.target.value, mo, dy)}
-                                placeholder="YYYY"
-                                className={`w-[60px] px-1.5 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-white placeholder-gray-700 focus:outline-none focus:border-blue-500 font-mono [appearance:textfield]`}
-                              />
+                              <select value={yr} onChange={e => commit(e.target.value, mo, dy)} className={`w-[72px] ${selCls}`}>
+                                <option value="">YYYY</option>
+                                {Array.from({length:10},(_,i)=>String(2023+i)).map(y=><option key={y} value={y}>{y}</option>)}
+                              </select>
                               <span className="text-gray-700 text-xs">/</span>
                               <select value={mo} onChange={e => commit(yr, e.target.value, dy)} className={`w-[48px] ${selCls}`}>
                                 <option value="">MM</option>
@@ -1753,8 +1763,9 @@ export default function LineModal({
                 </div>
               )}
 
-              {/* Reject Thresholds — NOT for PaddleOCR */}
-              {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
+
+              {/* Reject Thresholds — NOT for OCR types */}
+              {!['paddleocr'].includes(cfg.detector_type ?? 'yolo') && (
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs text-gray-400">Reject Thresholds</span>
@@ -1809,7 +1820,7 @@ export default function LineModal({
               )}
 
               {/* Save Thresholds (Borderline) — OCR에서는 숨김 (OCR은 패턴 매칭 방식) */}
-              {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
+              {!['paddleocr'].includes(cfg.detector_type ?? 'yolo') && (
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs text-gray-400">Save Thresholds</span>
@@ -1862,7 +1873,7 @@ export default function LineModal({
               )}
 
               {/* Show Threshold (Dashboard display threshold) */}
-              {(cfg.detector_type ?? 'yolo') !== 'paddleocr' && (
+              {!['paddleocr'].includes(cfg.detector_type ?? 'yolo') && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-xs text-gray-400">Show Threshold (Dashboard)</span>
