@@ -153,20 +153,33 @@ PYEOF
     continue
   fi
 
-  # dict.txt 복사
+  # dict.txt 추출 (inference.yml의 character_dict → 한 줄씩)
   echo -n "  │  📄 dict.txt... "
-  DICT_NAMES=("en:en_dict.txt" "korean:korean_dict.txt" "ch:ppocr_keys_v1.txt" "japan:japan_dict.txt")
-  DICT_FILE=""
-  for I in "${DICT_NAMES[@]}"; do [ "${I%%:*}" = "$LANG" ] && DICT_FILE="${I##*:}"; done
+  REC_DIR=$(echo "$FOUND" | grep '^REC=' | cut -d= -f2-)
   DICT_RESULT=$("$PYTHON" - 2>/dev/null <<PYEOF
-import shutil; from pathlib import Path; import paddleocr
-pkg = Path(paddleocr.__file__).parent
-for p in pkg.rglob('${DICT_FILE}'):
-    shutil.copy(p, '${OUT_DIR}/dict.txt')
-    print(f'{sum(1 for _ in open(p, encoding="utf-8"))}자')
-    break
-else:
-    print('NOT_FOUND')
+from pathlib import Path
+import yaml, sys
+
+yml_path = Path('${REC_DIR}') / 'inference.yml'
+if not yml_path.exists():
+    print('NOT_FOUND'); sys.exit(0)
+
+with open(yml_path, encoding='utf-8') as f:
+    data = yaml.safe_load(f)
+
+# PostProcess.character_dict 추출
+chars = None
+for section in data.values():
+    if isinstance(section, dict) and 'character_dict' in section:
+        chars = section['character_dict']
+        break
+
+if not chars:
+    print('NOT_FOUND'); sys.exit(0)
+
+out = Path('${OUT_DIR}') / 'dict.txt'
+out.write_text('\n'.join(str(c) for c in chars), encoding='utf-8')
+print(f'{len(chars)}자')
 PYEOF
   )
   [ "$DICT_RESULT" = "NOT_FOUND" ] \
