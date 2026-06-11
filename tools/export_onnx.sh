@@ -19,20 +19,7 @@ LANGS=("en" "korean" "ch" "japan")
 
 # ── 다운로드 모드 ─────────────────────────────────────────────
 _do_download() {
-  echo ""
-  echo -e "${BOLD}[1/2] 언어 선택${RESET}"
-  echo "  1) English only"
-  echo "  2) Korean only"
-  echo "  3) All languages (en + korean + ch + japan)"
-  echo ""
-  read -rp "선택 [1-3]: " LANG_CHOICE
-
-  case "$LANG_CHOICE" in
-    1) DL_LANGS=("en") ;;
-    2) DL_LANGS=("korean") ;;
-    3) DL_LANGS=("en" "korean" "ch" "japan") ;;
-    *) echo -e "${RED}잘못된 선택${RESET}"; exit 1 ;;
-  esac
+  local DL_LANGS=("en" "korean" "ch" "japan")
 
   # curl / wget 확인
   if command -v curl &>/dev/null; then
@@ -47,7 +34,7 @@ _do_download() {
   BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
 
   echo ""
-  echo -e "${BOLD}[2/2] 다운로드${RESET}"
+  echo -e "${BOLD}다운로드 (en / korean / ch / japan)${RESET}"
   echo ""
 
   STATUS=()
