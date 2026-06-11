@@ -17,7 +17,6 @@ REPO="GHengoy/NS_runtime"
 RELEASE_TAG="onnx-models-v1"
 ONNX_DIR="./onnx_export"
 TRT_DIR="${HOME}/ocr_models"
-LANGS=("en" "korean" "ch" "japan")
 FP16_OPT="--fp16"
 DET_OPT="960"
 
@@ -34,10 +33,7 @@ for CANDIDATE in \
     "/usr/bin/trtexec" \
     "/usr/local/bin/trtexec"
 do
-  if [ -x "$CANDIDATE" ]; then
-    TRTEXEC="$CANDIDATE"
-    break
-  fi
+  if [ -x "$CANDIDATE" ]; then TRTEXEC="$CANDIDATE"; break; fi
 done
 
 if [ -z "$TRTEXEC" ]; then
@@ -47,21 +43,64 @@ if [ -z "$TRTEXEC" ]; then
 fi
 echo -e "  ✅ ${TRTEXEC}"
 
-# ── 2. ONNX 다운로드 ──────────────────────────────────────────
-echo ""
-echo -e "${BOLD}[2/3] GitHub Releases에서 ONNX 다운로드${RESET}"
-echo -e "  출처: ${CYAN}github.com/${REPO}/releases/tag/${RELEASE_TAG}${RESET}"
-echo ""
+# curl / wget 확인
+if command -v curl &>/dev/null; then DL_CMD="curl"
+elif command -v wget &>/dev/null; then DL_CMD="wget"
+else echo -e "${RED}❌ curl 또는 wget이 필요합니다.${RESET}"; exit 1
+fi
 
-if command -v curl &>/dev/null; then
-  DL_CMD="curl"
-elif command -v wget &>/dev/null; then
-  DL_CMD="wget"
-else
-  echo -e "${RED}❌ curl 또는 wget이 필요합니다.${RESET}"
+# ── 2. Release 언어 목록 조회 ────────────────────────────────
+echo ""
+echo -e "${BOLD}[2/3] 언어 선택${RESET}"
+echo -e "  Release 조회 중..."
+
+ASSETS_JSON=$(curl -fsSL \
+  -H "Accept: application/vnd.github.v3+json" \
+  "https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}" 2>/dev/null)
+
+# det.onnx 파일명에서 언어 추출 (e.g. en_det.onnx → en)
+AVAILABLE_LANGS=($(echo "$ASSETS_JSON" | grep -o '"name":"[^"]*_det\.onnx"' | sed 's/"name":"//;s/_det\.onnx"//'))
+
+if [ ${#AVAILABLE_LANGS[@]} -eq 0 ]; then
+  echo -e "  ${RED}❌ Release에서 언어 목록을 가져오지 못했습니다.${RESET}"
+  echo "     네트워크 또는 Release 태그 확인: ${RELEASE_TAG}"
   exit 1
 fi
 
+echo ""
+echo -e "  번호를 입력하세요 (공백 구분, ${CYAN}a${RESET} = 전체)"
+echo ""
+echo -e "  ┌─ Release에 있는 언어 ────────────────────────────────────"
+for i in "${!AVAILABLE_LANGS[@]}"; do
+  printf "  │  %2d) %s\n" "$((i+1))" "${AVAILABLE_LANGS[$i]}"
+done
+echo -e "  └──────────────────────────────────────────────────────────"
+echo ""
+read -rp "  선택: " LANG_INPUT
+
+LANGS=()
+if [[ "$LANG_INPUT" == "a" ]]; then
+  LANGS=("${AVAILABLE_LANGS[@]}")
+else
+  for NUM in $LANG_INPUT; do
+    IDX=$((NUM - 1))
+    if [ "$IDX" -ge 0 ] && [ "$IDX" -lt "${#AVAILABLE_LANGS[@]}" ]; then
+      LANGS+=("${AVAILABLE_LANGS[$IDX]}")
+    else
+      echo -e "  ${YELLOW}⚠ 잘못된 번호: ${NUM} (무시)${RESET}"
+    fi
+  done
+fi
+
+if [ ${#LANGS[@]} -eq 0 ]; then
+  echo -e "${RED}선택된 언어가 없습니다.${RESET}"; exit 1
+fi
+
+echo ""
+echo -e "  선택된 언어: ${CYAN}${LANGS[*]}${RESET}"
+echo ""
+
+# ── 3. ONNX 다운로드 ──────────────────────────────────────────
 BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
 DL_STATUS=()
 
@@ -73,10 +112,8 @@ for LANG in "${LANGS[@]}"; do
 
   for FILE in det.onnx rec.onnx dict.txt; do
     DEST="${OUT_DIR}/${FILE}"
-    # 이미 있으면 스킵
     if [ -f "$DEST" ] && [ -s "$DEST" ]; then
-      echo -e "  │  ✅ ${FILE} (cached)"
-      continue
+      echo -e "  │  ✅ ${FILE} (cached)"; continue
     fi
     echo -n "  │  ⬇  ${FILE} ... "
     if [ "$DL_CMD" = "curl" ]; then
@@ -95,7 +132,6 @@ for LANG in "${LANGS[@]}"; do
   $LANG_OK && DL_STATUS+=("✅ ${LANG}") || DL_STATUS+=("❌ ${LANG}")
 done
 
-# 다운로드 실패 확인
 for S in "${DL_STATUS[@]}"; do
   if [[ "$S" == ❌* ]]; then
     echo -e "${RED}다운로드 실패가 있어 TRT 빌드를 중단합니다.${RESET}"
@@ -104,9 +140,9 @@ for S in "${DL_STATUS[@]}"; do
   fi
 done
 
-# ── 3. TRT 엔진 빌드 ──────────────────────────────────────────
+# ── 4. TRT 엔진 빌드 ──────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[3/3] TensorRT 엔진 빌드 (FP16, Det ${DET_OPT}×${DET_OPT})${RESET}"
+echo -e "${BOLD}[4/4] TensorRT 엔진 빌드 (FP16, Det ${DET_OPT}×${DET_OPT})${RESET}"
 echo "  (언어당 수 분 소요)"
 echo ""
 
@@ -135,7 +171,6 @@ for LANG in "${LANGS[@]}"; do
   echo -e "  ┌── ${CYAN}${LANG}${RESET} ─────────────────────────────"
   LANG_OK=true
 
-  # Detection 엔진
   echo -n "  │  🔨 det.trt ... "
   DET_INPUT=$(get_input_name "${IN_DIR}/det.onnx")
   "$TRTEXEC" \
@@ -151,7 +186,6 @@ for LANG in "${LANGS[@]}"; do
     echo -e "${RED}실패${RESET}"; LANG_OK=false
   fi
 
-  # Recognition 엔진
   echo -n "  │  🔨 rec.trt ... "
   REC_INPUT=$(get_input_name "${IN_DIR}/rec.onnx")
   "$TRTEXEC" \
@@ -167,7 +201,6 @@ for LANG in "${LANGS[@]}"; do
     echo -e "${RED}실패${RESET}"; LANG_OK=false
   fi
 
-  # dict.txt 복사
   cp "${IN_DIR}/dict.txt" "${OUT_DIR}/dict.txt"
   echo -e "  │  ✅ dict.txt 복사"
 
@@ -188,6 +221,6 @@ echo "  │  출력: ${TRT_ABS}"
 echo "  ├──────────────────────────────────────────────────────────┤"
 echo "  │  ⚙️  UI 설정:"
 echo "  │    Detector Type   → PaddleRT"
-echo "  │    Model Directory → ${TRT_ABS}/korean"
+echo "  │    Model Directory → ${TRT_ABS}/<언어>"
 echo "  └──────────────────────────────────────────────────────────┘"
 echo -e "${RESET}"
