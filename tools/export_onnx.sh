@@ -94,27 +94,24 @@ PYEOF
   fi
   echo -e "${GREEN}완료${RESET}"
 
-  # 모델 경로 탐색
+  # 모델 경로 탐색 (버전 무관 패턴 매칭)
   FOUND=$("$PYTHON" - 2>/dev/null <<PYEOF
 from pathlib import Path; import sys
 base = Path.home() / '.paddlex' / 'official_models'
 lang = '${LANG}'
 
-# PP-OCRv5 (PaddleOCR 3.x) 경로
-hints_v5 = {
-  'en':     ('PP-OCRv5_server_det', 'en_PP-OCRv5_mobile_rec'),
-  'korean': ('PP-OCRv5_server_det', 'korean_PP-OCRv5_mobile_rec'),
-  'ch':     ('PP-OCRv5_server_det', 'PP-OCRv5_server_rec'),
-  'japan':  ('PP-OCRv5_server_det', 'japan_PP-OCRv5_mobile_rec'),
-}
-det_name, rec_name = hints_v5.get(lang, ('', ''))
-det_dir = base / det_name
-rec_dir = base / rec_name
-# japan 전용 모델 없으면 server_rec 사용
-if not (rec_dir / 'inference.json').exists():
-    rec_dir = base / 'PP-OCRv5_server_rec'
-if (det_dir / 'inference.json').exists() and (rec_dir / 'inference.json').exists():
-    print(f'DET={det_dir}'); print(f'REC={rec_dir}'); sys.exit(0)
+def has_model(p):
+    return (p / 'inference.json').exists() or (p / 'inference.pdmodel').exists()
+
+# det: *_det 폴더 중 가장 최신 (버전 내림차순)
+dets = sorted([p for p in base.iterdir() if p.is_dir() and '_det' in p.name and has_model(p)], reverse=True)
+# rec: 언어 prefix가 붙은 폴더 우선, 없으면 server_rec 계열
+recs_lang = sorted([p for p in base.iterdir() if p.is_dir() and p.name.startswith(lang) and '_rec' in p.name and has_model(p)], reverse=True)
+recs_fallback = sorted([p for p in base.iterdir() if p.is_dir() and '_rec' in p.name and has_model(p) and not any(p.name.startswith(l) for l in ['en','korean','ch','japan'])], reverse=True)
+recs = recs_lang or recs_fallback
+
+if dets and recs:
+    print(f'DET={dets[0]}'); print(f'REC={recs[0]}'); sys.exit(0)
 sys.exit(1)
 PYEOF
   )
