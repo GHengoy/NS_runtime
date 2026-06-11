@@ -121,6 +121,10 @@ for LANG in "${LANGS[@]}"; do
   mkdir -p "${OUT_DIR}"
   echo -e "  ┌── ${CYAN}${LANG}${RESET} ─────────────────────────────"
 
+  # 그룹명 → PaddleOCR 대표 언어 코드 변환
+  declare -A GROUP_REPR=([latin]="fr" [arabic]="ar" [cyrillic]="ru" [devanagari]="hi" [eslav]="ru")
+  DL_LANG="${GROUP_REPR[$LANG]:-$LANG}"
+
   # Paddle 모델 다운로드
   echo -n "  │  📥 Paddle 모델 다운로드... "
   "$PYTHON" - 2>/dev/null <<PYEOF
@@ -131,9 +135,9 @@ for lg in ['ppocr','ppdet','paddle','root','paddlex']:
     logging.getLogger(lg).setLevel(logging.ERROR)
 from paddleocr import PaddleOCR
 try:
-    PaddleOCR(lang='${LANG}', use_gpu=False, show_log=False)
+    PaddleOCR(lang='${DL_LANG}', use_gpu=False, show_log=False)
 except (TypeError, ValueError):
-    PaddleOCR(lang='${LANG}')
+    PaddleOCR(lang='${DL_LANG}')
 PYEOF
   if [ $? -ne 0 ]; then
     echo -e "${RED}실패${RESET}"
