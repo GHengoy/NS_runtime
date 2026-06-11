@@ -260,21 +260,6 @@ _print_summary() {
 
 # ── 진입점 ────────────────────────────────────────────────────
 case "${1:-}" in
-  --download) _do_download ;;
-  --convert)  _do_convert ;;
-  *)
-    echo ""
-    echo -e "${BOLD}=== PaddleRT ONNX 모델 준비 ===${RESET}"
-    echo ""
-    echo "준비 방법을 선택하세요:"
-    echo "  1) GitHub Releases에서 다운로드 (권장 — 빠름, 별도 패키지 불필요)"
-    echo "  2) 로컬 변환 (paddlepaddle + paddle2onnx 직접 변환)"
-    echo ""
-    read -rp "선택 [1-2]: " METHOD
-    case "$METHOD" in
-      1) _do_download ;;
-      2) _do_convert ;;
-      *) echo -e "${RED}잘못된 선택${RESET}"; exit 1 ;;
-    esac
-    ;;
+  --convert) _do_convert ;;
+  *)         _do_download ;;
 esac
