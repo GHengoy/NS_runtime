@@ -42,6 +42,11 @@ workers/*/*.pfs
 *.bak
 *.db
 
+# Test weights (explicitly tracked)
+!workers/weights/
+!workers/weights/coco.yaml
+!workers/weights/yolov8n.pt
+
 # Secrets and local configuration
 .env
 .env.local
