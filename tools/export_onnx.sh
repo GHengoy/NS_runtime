@@ -16,6 +16,13 @@ export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 
 # 항상 프로젝트 venv python 사용
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# .env에서 GITHUB_TOKEN 로드
+ENV_FILE="${SCRIPT_DIR}/../.env"
+if [ -f "$ENV_FILE" ] && [ -z "$GITHUB_TOKEN" ]; then
+  GITHUB_TOKEN=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
+  export GITHUB_TOKEN
+fi
 PYTHON="${SCRIPT_DIR}/../.venv/bin/python3"
 if [ ! -x "$PYTHON" ]; then
   PYTHON="$(which python3)"
@@ -42,9 +49,7 @@ done
 
 # GitHub 토큰 확인
 if [ -z "$GITHUB_TOKEN" ]; then
-  echo -e "  ${RED}❌ GITHUB_TOKEN 환경변수가 없습니다.${RESET}"
-  echo -e "     사용법: GITHUB_TOKEN=ghp_xxx bash tools/export_onnx.sh"
-  exit 1
+  echo -e "  ${RED}❌ GITHUB_TOKEN이 없습니다.${RESET}"; exit 1
 fi
 echo -e "  ✅ GITHUB_TOKEN"
 
