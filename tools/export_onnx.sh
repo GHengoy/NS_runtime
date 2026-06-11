@@ -97,29 +97,24 @@ PYEOF
   # 모델 경로 탐색
   FOUND=$("$PYTHON" - 2>/dev/null <<PYEOF
 from pathlib import Path; import sys
-home = Path.home()
+base = Path.home() / '.paddlex' / 'official_models'
 lang = '${LANG}'
-hints = {
-  'en':     ('en/en_PP-OCRv4_det_infer',    'en/en_PP-OCRv4_rec_infer'),
-  'korean': ('ch/ch_PP-OCRv4_det_infer',     'korean/korean_PP-OCRv4_rec_infer'),
-  'ch':     ('ch/ch_PP-OCRv4_det_infer',     'ch/ch_PP-OCRv4_rec_infer'),
-  'japan':  ('ch/ch_PP-OCRv4_det_infer',     'japan/japan_PP-OCRv4_rec_infer'),
+
+# PP-OCRv5 (PaddleOCR 3.x) 경로
+hints_v5 = {
+  'en':     ('PP-OCRv5_server_det', 'en_PP-OCRv5_mobile_rec'),
+  'korean': ('PP-OCRv5_server_det', 'korean_PP-OCRv5_mobile_rec'),
+  'ch':     ('PP-OCRv5_server_det', 'PP-OCRv5_server_rec'),
+  'japan':  ('PP-OCRv5_server_det', 'japan_PP-OCRv5_mobile_rec'),
 }
-def check(base, dh, rh):
-    d = base / 'det' / dh; r = base / 'rec' / rh
-    if (d/'inference.pdmodel').exists() and (r/'inference.pdmodel').exists():
-        return d, r
-    return None, None
-dh, rh = hints.get(lang, ('',''))
-for base in [home/'.paddleocr'/'whl']:
-    d, r = check(base, dh, rh)
-    if d: print(f'DET={d}'); print(f'REC={r}'); sys.exit(0)
-for base in [home/'.paddleocr', home/'.paddlex', home/'.paddlex'/'official_models']:
-    if not base.exists(): continue
-    dets = sorted(base.rglob('*det*infer*/inference.pdmodel'))
-    recs = sorted(base.rglob('*rec*infer*/inference.pdmodel'))
-    rm = [p for p in recs if lang in str(p)] or recs
-    if dets and rm: print(f'DET={dets[0].parent}'); print(f'REC={rm[0].parent}'); sys.exit(0)
+det_name, rec_name = hints_v5.get(lang, ('', ''))
+det_dir = base / det_name
+rec_dir = base / rec_name
+# japan 전용 모델 없으면 server_rec 사용
+if not (rec_dir / 'inference.json').exists():
+    rec_dir = base / 'PP-OCRv5_server_rec'
+if (det_dir / 'inference.json').exists() and (rec_dir / 'inference.json').exists():
+    print(f'DET={det_dir}'); print(f'REC={rec_dir}'); sys.exit(0)
 sys.exit(1)
 PYEOF
   )
